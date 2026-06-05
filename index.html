@@ -1561,18 +1561,59 @@ function doPendingPromote(){if(!_pendingCtx||_pendingCtx.idx<0)return;var t=null
 
 // ===== 월 탭 =====
 function renderMonthBar(){
-  var tabs="",keys=Object.keys(MONTHS_DATA);
+  var keys=Object.keys(MONTHS_DATA);
+  // 년도별 그룹화
+  var byYear={}, orderedYears=[], otherKeys=[];
   keys.forEach(function(m){
+    var ym=m.match(/(\d{4})년\s*(\d+)월/);
+    if(!ym){otherKeys.push(m);return;}
+    var y=ym[1];
+    if(!byYear[y]){byYear[y]=[];orderedYears.push(y);}
+    byYear[y].push({key:m,mo:parseInt(ym[2],10)});
+  });
+  orderedYears.sort();
+  orderedYears.forEach(function(y){byYear[y].sort(function(a,b){return a.mo-b.mo;});});
+
+  var curY=(curMonth.match(/(\d{4})/)||[])[1]||"";
+  state.expandedYears=state.expandedYears||{};
+
+  function _mtab(m){
     var hid=hiddenMonths[m],col=monthColors[m]||"";
     var style=col&&!hid?' style="border-bottom-color:'+col+'"':'';
-    tabs+='<button class="month-tab'+(m===curMonth?" on":"")+(hid?" hidden":"")+'"'+style+' data-month="'+esc(m)+'" onclick="switchMonth(\''+esc(m)+'\')" ondblclick="renameMonth(\''+esc(m)+'\')" oncontextmenu="event.preventDefault();showMonthCtx(event,\''+esc(m)+'\')">'+esc(m)+'</button>';
+    return '<button class="month-tab'+(m===curMonth?" on":"")+(hid?" hidden":"")+'"'+style+' data-month="'+esc(m)+'" onclick="switchMonth(\''+esc(m)+'\')" ondblclick="renameMonth(\''+esc(m)+'\')" oncontextmenu="event.preventDefault();showMonthCtx(event,\''+esc(m)+'\')">'+esc(m)+'</button>';
+  }
+
+  var tabs="";
+  otherKeys.forEach(function(m){tabs+=_mtab(m);});
+
+  orderedYears.forEach(function(y){
+    var list=byYear[y];
+    // 1~12월 모두 있으면 완성년도
+    var moSet={};list.forEach(function(it){moSet[it.mo]=true;});
+    var isComplete=true;for(var i=1;i<=12;i++){if(!moSet[i]){isComplete=false;break;}}
+    var isCurrent=(y===curY);
+    // 펼침 규칙: 현재년도 / 완성 안 된 년도 / 사용자가 펼친 년도
+    var isExpanded=isCurrent||!isComplete||state.expandedYears[y]===true;
+
+    // 그룹 헤더 — 완성됐고 현재년도 아닐 때만
+    if(isComplete && !isCurrent){
+      var arr=isExpanded?'▼':'▶';
+      tabs+='<button class="month-tab" onclick="toggleYearExpand(\''+y+'\')" title="'+(isExpanded?"접기":"펼치기 (1~12월)")+'" style="background:#EEF2FF;border-color:#90CAF9;color:#1565C0;font-weight:700">'+arr+' '+y+'년</button>';
+    }
+    if(isExpanded){list.forEach(function(it){tabs+=_mtab(it.key);});}
   });
+
   tabs+='<button class="month-add" onclick="showCopyMonth()">+ 다음 월</button>';
   var h='<button class="month-arrow" onclick="scrollMonths(-1)">&#9664;</button>';
   h+='<div class="month-scroll" id="monthScroll">'+tabs+'</div>';
   h+='<button class="month-arrow" onclick="scrollMonths(1)">&#9654;</button>';
   document.getElementById("monthBar").innerHTML=h;
   setTimeout(function(){var el=document.querySelector(".month-tab.on");if(el)el.scrollIntoView({inline:"center",behavior:"smooth"});},50);
+}
+function toggleYearExpand(y){
+  state.expandedYears=state.expandedYears||{};
+  state.expandedYears[y]=!(state.expandedYears[y]===true);
+  renderMonthBar();
 }
 function scrollMonths(dir){var el=document.getElementById("monthScroll");if(el)el.scrollBy({left:dir*150,behavior:"smooth"});}
 function switchMonth(m){if(hiddenMonths[m])return;curMonth=m;window._payHistDiagLogged=false;renderMonthBar();render();}
@@ -2343,12 +2384,16 @@ function renderGubnSplit(emps,selCp){
 // (37) 여러 월 동시 비교
 function renderMultiMonthCompare(selCp){
   var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  // 현재 선택된 월 이후 월은 비교 후보에서 제외
+  var curIdxAll=months.indexOf(curMonth);
+  if(curIdxAll>=0)months=months.slice(0,curIdxAll+1);
   if(months.length<2)return"";
   // 기본: 최근 3개월 자동 선택 (또는 state.multiMonths)
   if(!state.multiMonths||state.multiMonths.length===0){
     state.multiMonths=months.slice(-3);
   }
-  var sel=state.multiMonths;
+  // 선택된 월 중 현재월 이후 것은 제외 (정합성 유지)
+  var sel=state.multiMonths.filter(function(m){return months.indexOf(m)>=0;});
 
   var h='<div style="background:#fff;border:1px solid #e0e0e0;border-top:3px solid #6A1B9A;border-radius:10px;padding:12px 14px;margin:18px 0">';
   h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">';
@@ -4492,9 +4537,30 @@ function renderDraftInOverview(selCp){
 // ===== 트렌드 서브탭 (11,12,13,14) =====
 function renderOvTrend(selCp){
   var months=Object.keys(MONTHS_DATA).sort(monthCompare);
-  if(months.length<2)return'<div style="padding:40px;text-align:center;color:#aaa;font-size:13px">트렌드 분석을 위해 최소 2개월의 데이터가 필요합니다.<br>현재 '+months.length+'개월만 로드되어 있습니다.</div>';
+  // 현재 선택된 월 이후 월은 트렌드에서 제외 (예: 2025년 10월 시트 → 2025년 10월까지만)
+  var curIdxAll=months.indexOf(curMonth);
+  if(curIdxAll>=0)months=months.slice(0,curIdxAll+1);
+  if(months.length<2)return'<div style="padding:40px;text-align:center;color:#aaa;font-size:13px">트렌드 분석을 위해 최소 2개월의 데이터가 필요합니다.<br>현재 월('+esc(curMonth)+') 기준 '+months.length+'개월만 사용 가능합니다.</div>';
 
-  var h='<div style="font-size:12px;font-weight:800;color:#1a3a5c;margin:8px 0 10px;padding-bottom:6px;border-bottom:1px solid #ECECEE">📈 트렌드 분석 — '+esc(selCp)+' ('+months.length+'개월)</div>';
+  // 년도 필터 — 당해년도 기본, 전체 버튼으로 override
+  var _curY=parseInt((curMonth.match(/(\d{4})/)||[])[1]||"0",10);
+  var _yCnt=months.filter(function(m){return parseInt((m.match(/(\d{4})/)||[])[1]||"0",10)===_curY;}).length;
+  var _trRange=state.trendRange||"cur";
+  // 구버전 호환: auto / y_YYYY는 cur로 정규화
+  if(_trRange==="auto"||/^y_\d{4}$/.test(_trRange))_trRange="cur";
+  // 당해년도가 1개월뿐이면 전체로 폴백
+  if(_trRange==="cur" && _yCnt<2)_trRange="all";
+  var _displayYear=(_trRange==="cur")?_curY:null;
+  var _rangeLabel=_displayYear?(_displayYear+'년 ('+_yCnt+'개월)'):(months.length+'개월, ~'+esc(curMonth));
+
+  var h='<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:8px 0 10px;padding-bottom:6px;border-bottom:1px solid #ECECEE">';
+  h+='<div style="font-size:12px;font-weight:800;color:#1a3a5c">📈 트렌드 분석 — '+esc(selCp)+' ('+_rangeLabel+')</div>';
+  h+='<div style="display:flex;gap:4px">';
+  var _onCur=_trRange==="cur";
+  h+='<button onclick="state.trendRange=\'cur\';render()" style="padding:3px 9px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid '+(_onCur?"#1565C0":"#ddd")+';background:'+(_onCur?"#1565C0":"#fff")+';color:'+(_onCur?"#fff":"#666")+'">당해년도</button>';
+  var _onAll=_trRange==="all";
+  h+='<button onclick="state.trendRange=\'all\';render()" style="padding:3px 9px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid '+(_onAll?"#1565C0":"#ddd")+';background:'+(_onAll?"#1565C0":"#fff")+';color:'+(_onAll?"#fff":"#666")+'">전체</button>';
+  h+='</div></div>';
 
   // 월별 데이터 수집 — gubn만 보고 정규직/비정규직 분류 (사번 "퇴사" 무시)
   var monthData=months.map(function(mk){
@@ -4524,6 +4590,11 @@ function renderOvTrend(selCp){
       avgNet:me.length?Math.round(netAll/me.length):0
     };
   });
+
+  // 차트용(년도 필터 적용). YoY와 curRowMD는 전체 monthData 사용.
+  var monthDataChart=_displayYear?monthData.filter(function(d){
+    return parseInt((d.mk.match(/(\d{4})/)||[])[1]||"0",10)===_displayYear;
+  }):monthData;
 
   // (13) YoY — KPI 카드 최상단
   var yoyKey=getYoYMonthKey();
@@ -4561,8 +4632,8 @@ function renderOvTrend(selCp){
   h+='<div style="font-size:10px;color:#666">현재월 비정규직 비율 <b style="color:#F57F17">'+curRowMD.nonRegRatio+'%</b></div>';
   h+='</div>';
   h+=svgLine([
-    {label:"전체",color:"#BDBDBD",points:monthData.map(function(d){return{x:d.shortLbl,y:d.cnt};})},
-    {label:"정규직",color:"#1565C0",points:monthData.map(function(d){return{x:d.shortLbl,y:d.cntReg};})}
+    {label:"전체",color:"#BDBDBD",points:monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cnt};})},
+    {label:"정규직",color:"#1565C0",points:monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cntReg};})}
   ],720,180,{showLegend:true});
   h+='</div>';
 
@@ -4575,17 +4646,17 @@ function renderOvTrend(selCp){
   h+='<div style="font-size:10px;color:#666">현재월 비정규직 인건비 <b style="color:#F57F17">'+fmtW(curNonRegPay)+'</b> ('+curNonRegPct+'%)</div>';
   h+='</div>';
   h+=svgLine([
-    {label:"전체",color:"#A5D6A7",points:monthData.map(function(d){return{x:d.shortLbl,y:d.net};})},
-    {label:"정규직",color:"#2E7D32",points:monthData.map(function(d){return{x:d.shortLbl,y:d.netReg};})}
+    {label:"전체",color:"#A5D6A7",points:monthDataChart.map(function(d){return{x:d.shortLbl,y:d.net};})},
+    {label:"정규직",color:"#2E7D32",points:monthDataChart.map(function(d){return{x:d.shortLbl,y:d.netReg};})}
   ],720,180,{yFmt:fmtW,showLegend:true});
   h+='</div>';
 
   // (12) 월별 입사/퇴사 그룹 막대차트
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);border-top:3px solid #6A1B9A;padding:12px 14px;margin-bottom:10px">';
   h+='<div style="font-size:11px;font-weight:800;color:#6A1B9A;margin-bottom:8px">🔁 월별 입사·퇴사</div>';
-  h+=svgGroupedBar(monthData.map(function(d){return{lbl:d.shortLbl,v1:d.inCnt,v2:d.outCnt};}),"#2E7D32","#C62828","입사","퇴사",720,180);
-  var totalIn=monthData.reduce(function(a,d){return a+d.inCnt;},0);
-  var totalOut=monthData.reduce(function(a,d){return a+d.outCnt;},0);
+  h+=svgGroupedBar(monthDataChart.map(function(d){return{lbl:d.shortLbl,v1:d.inCnt,v2:d.outCnt};}),"#2E7D32","#C62828","입사","퇴사",720,180);
+  var totalIn=monthDataChart.reduce(function(a,d){return a+d.inCnt;},0);
+  var totalOut=monthDataChart.reduce(function(a,d){return a+d.outCnt;},0);
   h+='<div style="display:flex;gap:10px;margin-top:8px;font-size:10px">';
   h+='<div style="flex:1;background:#E8F5E9;border-radius:6px;padding:6px 10px"><span style="color:#2E7D32;font-weight:700">총 입사:</span> <b>'+totalIn+'명</b></div>';
   h+='<div style="flex:1;background:#FFEBEE;border-radius:6px;padding:6px 10px"><span style="color:#C62828;font-weight:700">총 퇴사:</span> <b>'+totalOut+'명</b></div>';
@@ -4593,8 +4664,8 @@ function renderOvTrend(selCp){
   h+='</div></div>';
 
   // (12b+12c) 1인당 평균 인건비 추이 + 다음 달 예상 인건비 (2-컬럼)
-  var avgBasePts=monthData.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.base/d.cnt):null};});
-  var avgNetPts=monthData.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.net/d.cnt):null};});
+  var avgBasePts=monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.base/d.cnt):null};});
+  var avgNetPts=monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.net/d.cnt):null};});
   var curMD=monthData.find(function(d){return d.mk===curMonth;})||monthData[monthData.length-1];
   var hasPredict=curMD&&curMD.cnt;
   var curTotal=hasPredict?curMD.net:0;
@@ -4612,7 +4683,7 @@ function renderOvTrend(selCp){
   // 좌: 1인당 평균 인건비 추이
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);border-top:3px solid #00838F;padding:12px 14px">';
   h+='<div style="font-size:11px;font-weight:800;color:#00838F;margin-bottom:8px">📊 1인당 평균 인건비 추이</div>';
-  if(months.length<2){h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">비교할 월이 부족합니다</div>';}
+  if(monthDataChart.length<2){h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">비교할 월이 부족합니다</div>';}
   else{
     h+=svgLine([
       {label:"평균 기본월급여",color:"#1565C0",points:avgBasePts},
@@ -4638,9 +4709,9 @@ function renderOvTrend(selCp){
 
   h+='</div>';// 2-컬럼 grid 끝
 
-  // (14) 분기별 요약
+  // (14) 분기별 요약 (년도 필터 적용)
   var quarters={};
-  monthData.forEach(function(d){
+  monthDataChart.forEach(function(d){
     var q=getQuarter(d.mk);if(!q)return;
     var key=q.year+"년 Q"+q.quarter;
     if(!quarters[key])quarters[key]={key:key,sumCnt:0,cnt:0,sumNet:0,sumIn:0,sumOut:0};
@@ -7281,12 +7352,46 @@ function renderPersonalDetail(uid){
   h+='<div style="background:#fff;border:1px solid #e0e0e0;border-top:3px solid '+(totalGrowth>=0?"#F57F17":"#C62828")+';border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:#888">누적 변동</div><div style="font-size:15px;font-weight:800;color:'+(totalGrowth>=0?"#F57F17":"#C62828")+'">'+(totalGrowth>=0?"+":"")+totalGrowth+'%</div><div style="font-size:9px;color:#aaa">'+fmtW(currentPay-initialPay)+'</div></div>';
   h+='</div>';
 
-  // 급여 라인차트 (29번)
-  var basePts=tl.map(function(x){return{x:x.month.replace(/(\d{4})년\s*(\d+)월/,"$1-$2"),y:x.basePay||null};});
-  var netPts=tl.map(function(x){return{x:x.month.replace(/(\d{4})년\s*(\d+)월/,"$1-$2"),y:x.netPay||null};});
+  // 급여 라인차트 (29번) — 기간: 최근 12개월(기본) / 전체 / 년도 드롭다운
+  var tlRange=state.personalTimelineRange||"12m";
+  if(tlRange==="year")tlRange="12m"; // 구버전 호환 (해당년도 토글 제거됨)
+  var tlChart=tl;
+  var _tlYr="";
+  if(tlRange==="12m"){
+    tlChart=tl.slice(-12);
+  }else if(/^y_\d{4}$/.test(tlRange)){
+    _tlYr=tlRange.substring(2);
+    tlChart=tl.filter(function(x){
+      return (x.month.match(/(\d{4})/)||[])[1]===_tlYr;
+    });
+  }
+  // "all" = 전체
+  var _tlYrSet={};
+  tl.forEach(function(x){
+    var y=(x.month.match(/(\d{4})/)||[])[1];
+    if(y)_tlYrSet[y]=1;
+  });
+  var _tlYrList=Object.keys(_tlYrSet).sort();
+  var basePts=tlChart.map(function(x){return{x:x.month.replace(/(\d{4})년\s*(\d+)월/,"$1-$2"),y:x.basePay||null};});
+  var netPts=tlChart.map(function(x){return{x:x.month.replace(/(\d{4})년\s*(\d+)월/,"$1-$2"),y:x.netPay||null};});
   h+='<div style="background:#fff;border:1px solid #e0e0e0;border-top:3px solid #1565C0;border-radius:10px;padding:12px 14px;margin-bottom:10px">';
-  h+='<div style="font-size:11px;font-weight:800;color:#1565C0;margin-bottom:6px">💰 급여 타임라인</div>';
-  if(tl.length<2)h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">차트는 2개월 이상 데이터 필요</div>';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">';
+  h+='<div style="font-size:11px;font-weight:800;color:#1565C0">💰 급여 타임라인</div>';
+  h+='<div style="display:flex;gap:4px;align-items:center">';
+  [["12m","최근 12개월"],["all","전체"]].forEach(function(opt){
+    var on=tlRange===opt[0];
+    h+='<button onclick="state.personalTimelineRange=\''+opt[0]+'\';render()" style="padding:3px 9px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid '+(on?"#1565C0":"#ddd")+';background:'+(on?"#1565C0":"#fff")+';color:'+(on?"#fff":"#666")+'">'+opt[1]+'</button>';
+  });
+  var _yrOn=!!_tlYr;
+  h+='<select onchange="state.personalTimelineRange=this.value?(\'y_\'+this.value):\'12m\';render()" style="padding:3px 7px;border-radius:5px;font-size:10px;font-weight:700;border:1px solid '+(_yrOn?"#1565C0":"#ddd")+';background:'+(_yrOn?"#1565C0":"#fff")+';color:'+(_yrOn?"#fff":"#666")+';font-family:inherit;cursor:pointer">';
+  h+='<option value="">년도 선택</option>';
+  _tlYrList.forEach(function(y){
+    h+='<option value="'+y+'"'+(_tlYr===y?" selected":"")+'>'+y+'년</option>';
+  });
+  h+='</select>';
+  h+='</div>';
+  h+='</div>';
+  if(tlChart.length<2)h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">차트는 2개월 이상 데이터 필요</div>';
   else h+=svgLine([{label:"기본월급여",color:"#1565C0",points:basePts},{label:"실지급",color:"#2E7D32",points:netPts}],680,180,{yFmt:fmtW});
   h+='</div>';
 
