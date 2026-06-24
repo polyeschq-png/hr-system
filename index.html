@@ -55,7 +55,8 @@ body{font-family:"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif
 .ttable tbody td{padding:7px 10px;border-bottom:1px solid var(--divider);font-size:10.5px;color:#26262b}
 .ttable tbody td.r{text-align:right}.ttable tbody td.c{text-align:center}
 .ttable tbody tr:last-child td{border-bottom:none}
-.ttable tbody tr:hover{background:var(--row-hover)}
+.ttable tbody tr:nth-child(even):not(.sumrow) td{background:#f0f0f0}
+.ttable tbody tr:hover:not(.sumrow) td{background:#e3f2fd}
 .ttable tbody tr.sumrow td{font-weight:800;background:#FAFBFD;border-top:1px solid #E5E5E8}
 .ttable .lbl{font-weight:700;color:#26262b}
 .tbar-wrap{display:flex;align-items:center;gap:6px;min-width:90px}
@@ -380,7 +381,7 @@ function generateUid(rec){
   var firstJoin=rec.firstJoin||rec.joinDate||"";
   var firstJoinClean=String(firstJoin).replace(/[^0-9]/g,"").slice(0,8);
   var residentClean=String(rec.resident||"").replace(/[^0-9]/g,"");
-  var nameKey=String(rec.name||"?").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"");
+  var nameKey=String(rec.name||"?").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"").replace(/[.#$\[\]\/]/g,"");// Firebase 키 금지문자 제거(예: "Emma E. Ostlund"의 마침표)
   if(residentClean.length>=7){
     return residentClean.slice(0,7)+"_"+firstJoinClean+"_"+nameKey;
   }
@@ -1110,7 +1111,7 @@ function gubnHTML(g){
 }
 
 function notify(m,t){var e=document.getElementById("notif");e.textContent=m;e.className="notif "+(t||"info");e.style.display="block";clearTimeout(e._t);e._t=setTimeout(function(){e.style.display="none";},3000);}
-function switchTab(t){state.tab=t;state.gradePayEditingUid=null;window._payHistDiagLogged=false;document.querySelectorAll("#mainTabs .tab").forEach(function(b){b.classList.toggle("on",b.dataset.tab===t);});render();}
+function switchTab(t){state.tab=t;invalidateGpRowCache();state.gradePayEditingUid=null;window._payHistDiagLogged=false;document.querySelectorAll("#mainTabs .tab").forEach(function(b){b.classList.toggle("on",b.dataset.tab===t);});render();}
 function onSearch(el){
   el=el||document.getElementById("searchBox");
   if(!el)return;
@@ -1155,17 +1156,12 @@ function closeModal(){document.getElementById("modalBg").classList.remove("show"
 // ===== 통계 =====
 function getStats(){
   var total=0,byCampus={},byGrade={},byGubn={},totalBasePay=0,totalNetPay=0,totalDeduct=0;
-  var seenUid={};
+  // 전배자(같은 사람·여러 캠퍼스)는 캠퍼스마다 별도 카운트 — 개인이력 타임라인만 통합
   DD().campuses.forEach(function(cp){
     var ct=0;
     var cpName=typeof normalizeCampus==="function"?normalizeCampus(cp.name):cp.name;
     cp.teams.forEach(function(t){
       (t.employees||[]).forEach(function(e){
-        // _uid 기준으로만 중복 제거 (동명이인은 _uid 다르므로 별도 카운트)
-        if(e._uid){
-          if(seenUid[e._uid])return;
-          seenUid[e._uid]=true;
-        }
         ct++;
         total++;
         byGrade[e.grade]=(byGrade[e.grade]||0)+1;
@@ -1182,16 +1178,11 @@ function getStats(){
 
 function getAllEmployees(){
   var list=[];
-  var seenUid={};
+  // 전배자(같은 사람·여러 캠퍼스)는 캠퍼스마다 별도 행으로 유지 — 개인이력 타임라인만 통합
   DD().campuses.forEach(function(cp){
     var cpName=typeof normalizeCampus==="function"?normalizeCampus(cp.name):cp.name;
     cp.teams.forEach(function(t){
       (t.employees||[]).forEach(function(e){
-        // _uid 기준으로만 중복 제거 (동명이인은 _uid 다르므로 별도 카운트)
-        if(e._uid){
-          if(seenUid[e._uid])return;
-          seenUid[e._uid]=true;
-        }
         list.push(Object.assign({campus:cpName,team:t.name},e));
       });
     });
@@ -1204,18 +1195,18 @@ function getAllEmployees(){
 function getAllManagersAllTime(){
   var allTl=buildAllTimelines();
   var map={};
-  Object.keys(allTl).forEach(function(name){
-    var tl=allTl[name];
+  Object.keys(allTl).forEach(function(uid){
+    var tl=allTl[uid];
     var latestMgr=null;
     // 최신 월부터 역순 탐색, 관리자 직책인 최근 레코드 선택
     for(var i=tl.length-1;i>=0;i--){
       if(isManagerGrade(tl[i].grade)){latestMgr=tl[i];break;}
     }
     if(latestMgr){
-      map[name]=Object.assign({name:name,_month:latestMgr.month},latestMgr);
+      map[uid]=Object.assign({_uid:uid,_month:latestMgr.month},latestMgr);
     }
   });
-  return Object.keys(map).map(function(n){return map[n];});
+  return Object.keys(map).map(function(u){return map[u];});
 }
 
 // ===== UNDO =====
@@ -1676,7 +1667,12 @@ function calcTenureDecimal(joinDate){
 }
 // 개인이력 탭과 동일 기준: 모든 월의 타임라인을 훑어 가장 이른 입사일 반환
 // (1) raw의 firstJoin 우선, 없으면 (2) 가장 이른 월의 emp.joinDate, 그것도 없으면 fallback
-function getEmpFirstJoinDate(name,fallback){
+function getEmpFirstJoinDate(name,fallback,uid){
+  // UID 중간부(주민_입사일_이름)에 입사일이 들어있음 → 동명이인 안전. 가장 신뢰하는 출처로 우선 사용.
+  if(uid){
+    var _up=String(uid).split("_");
+    if(_up.length>=2&&/^\d{8}$/.test(_up[1]))return _up[1].slice(0,4)+"-"+_up[1].slice(4,6)+"-"+_up[1].slice(6,8);
+  }
   if(!name)return fallback||"";
   try{
     if(typeof getUidsByName==="function"&&typeof buildAllTimelines==="function"){
@@ -1705,11 +1701,21 @@ function calcTenureByName(name,fallbackJoin){
   return calcTenureDecimal(getEmpFirstJoinDate(name,fallbackJoin));
 }
 
-// 평균임금 표시용 — 시트의 지급합계(totalPay)에서 자녀교육비(childEdu)를 뺀 금액
+// 평균임금/지급합계 표시용 — 시트의 지급합계(totalPay)에서 자녀교육비(childEdu)를 뺀 금액
 // rr.totalPay 가 없으면 e.basePay (monthlyBasePay) 폴백
-function getEmpPayForAvg(e){
+// 전배자(같은 달 두 캠퍼스)·동명이인 정확 매칭: UID+캠퍼스 우선 → 이름+캠퍼스 → UID → 이름
+// campusHint: e.campus 가 없는 호출부(캠퍼스 카드 등)에서 캠퍼스명을 직접 넘김
+// rawsOverride: 전월 등 다른 월 raw 와 비교할 때 그 월의 rawRecords 를 넘김(기본=현재 월)
+function getEmpPayForAvg(e,campusHint,rawsOverride){
   if(!e)return 0;
-  var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
+  var cp=campusHint||e.campus||null;
+  var uid=e._uid||null;
+  var raws=rawsOverride||(D().rawRecords||[]);
+  var rr=null;
+  if(uid&&cp)rr=raws.find(function(r){return r._uid===uid&&r.campus===cp;});
+  if(!rr&&cp)rr=raws.find(function(r){return r.name===e.name&&r.campus===cp;});
+  if(!rr&&uid)rr=raws.find(function(r){return r._uid===uid;});
+  if(!rr)rr=raws.find(function(r){return r.name===e.name;});
   if(rr&&rr.totalPay)return Math.max(0,(rr.totalPay||0)-(rr.childEdu||0));
   return e.basePay||0;
 }
@@ -1861,7 +1867,81 @@ function buildAllTimelines(){
   _timelineCache=map;_timelineCacheKey=key;
   return map;
 }
-function invalidateTimelineCache(){_timelineCache=null;_timelineCacheKey=null;_nameToUids=null;}
+var _gpRowCache=null,_gpRowCacheMonth=null;
+function invalidateGpRowCache(){_gpRowCache=null;}
+function invalidateTimelineCache(){_timelineCache=null;_timelineCacheKey=null;_nameToUids=null;_mergeGrpCache=null;_mergeGrpKey=null;if(typeof WeakMap!=="undefined")_rawPkIndex=new WeakMap();invalidateGpRowCache();}
+
+// ===== 동일인 표시 통합 (2단계 — UID/원본 데이터 불변, 개인이력 화면 전용) =====
+// 같은 주민번호 13자리 + 재직월 공백 없음(연속) = 개명·표기오류·입사일오기입으로 갈라진 같은 사람 → 한 카드로 표시
+// 재직월에 공백 있으면(재입사 가능성) 합치지 않음 — 별개 재직기간 유지, 동일인 링크만
+var _mergeGrpCache=null,_mergeGrpKey=null;
+function getDisplayMergeGroups(){
+  var key=Object.keys(MONTHS_DATA).length+"|"+Object.keys(MONTHS_DATA).sort().join(",");
+  if(_mergeGrpCache&&_mergeGrpKey===key)return _mergeGrpCache;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var mIdx={};months.forEach(function(m,i){mIdx[m]=i;});
+  var info={};// uid → {res: 전기간 최장 주민번호, months:{}}
+  months.forEach(function(mk){
+    (MONTHS_DATA[mk].rawRecords||[]).forEach(function(r){
+      if(!r._uid)return;
+      var d=String(r.resident||"").replace(/[^\d]/g,"");
+      var o=info[r._uid]||(info[r._uid]={res:"",months:{}});
+      if(d.length>o.res.length)o.res=d;
+      o.months[mk]=1;
+    });
+  });
+  var by13={};
+  Object.keys(info).forEach(function(u){
+    if(info[u].res.length<13)return;
+    var k=info[u].res.slice(0,13);
+    (by13[k]=by13[k]||[]).push(u);
+  });
+  var map={},groups={};// map: uid→대표uid / groups: 대표uid→{uids:[...]}
+  Object.keys(by13).forEach(function(k){
+    var us=by13[k];
+    if(us.length<2)return;
+    // 합산 재직월에 공백 있으면(재입사) 통합 제외
+    var idxSet={};
+    us.forEach(function(u){Object.keys(info[u].months).forEach(function(m){idxSet[mIdx[m]]=1;});});
+    var idxs=Object.keys(idxSet).map(Number).sort(function(a,b){return a-b;});
+    if((idxs[idxs.length-1]-idxs[0]+1)!==idxs.length)return;
+    // 대표 = 가장 최근 월까지 재직한 UID (현재 이름)
+    var prim=us.slice().sort(function(a,b){
+      var la=Math.max.apply(null,Object.keys(info[a].months).map(function(m){return mIdx[m];}));
+      var lb=Math.max.apply(null,Object.keys(info[b].months).map(function(m){return mIdx[m];}));
+      return lb-la;
+    })[0];
+    groups[prim]={uids:us};
+    us.forEach(function(u){map[u]=prim;});
+  });
+  _mergeGrpCache={map:map,groups:groups};
+  _mergeGrpKey=key;
+  return _mergeGrpCache;
+}
+
+// 통합 그룹의 합쳐진 타임라인
+// 같은 달+같은 캠퍼스 중복(이름표기 변형) → 대표 UID 기록 1개만
+// 같은 달+다른 캠퍼스(전배 월) → 둘 다 유지 (급여가 캠퍼스별로 나뉘어 있으므로 숨기면 왜곡)
+function getMergedTimeline(uid){
+  var all=buildAllTimelines();
+  var g=getDisplayMergeGroups();
+  var prim=g.map[uid]||uid;
+  var grp=g.groups[prim];
+  if(!grp)return{tl:all[uid]||[],merged:false,uids:[uid],primary:uid};
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var mIdx={};months.forEach(function(m,i){mIdx[m]=i;});
+  var byKey={};
+  grp.uids.forEach(function(u){
+    (all[u]||[]).forEach(function(e){
+      var k=e.month+"|"+(e.campus||"");
+      if(!byKey[k]||u===prim)byKey[k]=e;
+    });
+  });
+  var tl=Object.keys(byKey).map(function(k){return byKey[k];}).sort(function(a,b){
+    return(mIdx[a.month]-mIdx[b.month])||String(a.campus||"").localeCompare(String(b.campus||""),"ko");
+  });
+  return{tl:tl,merged:true,uids:grp.uids,primary:prim};
+}
 
 // 동명이인 감지: 이름으로 UID 목록 조회
 function getUidsByName(name){
@@ -1908,12 +1988,35 @@ function detectTimelineEvents(timeline){
 // 캠퍼스/직책 연속 기간 (Gantt 스타일)
 function getPeriodRanges(timeline,field){
   if(!timeline.length)return[];
-  var ranges=[];var cur={val:timeline[0][field],start:timeline[0].month,end:timeline[0].month};
-  for(var i=1;i<timeline.length;i++){
-    if(timeline[i][field]===cur.val)cur.end=timeline[i].month;
-    else{ranges.push(cur);cur={val:timeline[i][field],start:timeline[i].month,end:timeline[i].month};}
-  }
-  ranges.push(cur);
+  // 월별로 값 그룹화 — 전배 월(같은 달에 값 2개)은 이전 값 구간을 그 달까지 연장 후 새 값 구간 시작
+  // (행 순서에 따라 "대전→광명→대전→광명"으로 쪼개지던 문제 방지)
+  var monthOrder=[];var byMonth={};
+  timeline.forEach(function(e){
+    var m=e.month;
+    if(!byMonth[m]){byMonth[m]=[];monthOrder.push(m);}
+    var v=e[field];
+    if(byMonth[m].indexOf(v)<0)byMonth[m].push(v);
+  });
+  var ranges=[];var cur=null;
+  monthOrder.forEach(function(m){
+    var vals=byMonth[m];
+    if(!cur){
+      cur={val:vals[0],start:m,end:m};
+      vals.slice(1).forEach(function(v){ranges.push(cur);cur={val:v,start:m,end:m};});
+      return;
+    }
+    if(vals.indexOf(cur.val)>=0){
+      // 이전 값이 이 달에도 있음 → 구간 연장, 새 값들은 이 달부터 새 구간
+      cur.end=m;
+      vals.filter(function(v){return v!==cur.val;}).forEach(function(v){ranges.push(cur);cur={val:v,start:m,end:m};});
+    }else{
+      vals.forEach(function(v){
+        if(cur.val===v){cur.end=m;return;}
+        ranges.push(cur);cur={val:v,start:m,end:m};
+      });
+    }
+  });
+  if(cur)ranges.push(cur);
   return ranges;
 }
 
@@ -2159,11 +2262,11 @@ function renderOverview(){
      .replace(/margin-bottom:12px/g,"margin-bottom:8px")
      .replace(/margin-bottom:14px/g,"margin-bottom:10px")
      .replace(/margin:18px 0 8px/g,"margin:12px 0 6px");
-  return '<div style="max-width:1400px">'+h+'</div>';
+  return '<div style="max-width:'+(subTab==="salaryDetail"?"none":"1400px")+'">'+h+'</div>';
 }
 
 function renderOvSummary(emps,cp,cc,st,selCp){
-  var totalBase=emps.reduce(function(a,e){return a+(e.basePay||0);},0);
+  var totalBase=emps.reduce(function(a,e){return a+getEmpPayForAvg(e);},0);// 지급합계(totalPay-자녀교육비)
   var totalNet=emps.reduce(function(a,e){return a+(e.netPay||0);},0);
 
   // 당월 퇴사자/입사자 (inoutRecords에서 추출)
@@ -2338,7 +2441,7 @@ function renderOvSummary(emps,cp,cc,st,selCp){
     h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:14px">';
     DD().campuses.forEach(function(cpi){
       var ccc=CAMPUS_C[cpi.name]||{hd:"#555"};
-      var cnt=0,base=0,net=0;cpi.teams.forEach(function(t){cnt+=(t.employees||[]).length;(t.employees||[]).forEach(function(e){base+=e.basePay||0;net+=e.netPay||0;});});
+      var cnt=0,base=0,net=0;cpi.teams.forEach(function(t){cnt+=(t.employees||[]).length;(t.employees||[]).forEach(function(e){base+=getEmpPayForAvg(e,cpi.name);net+=e.netPay||0;});});
       var outCnt=(D().inoutRecords||[]).filter(function(r){return r.type==="퇴사"&&r.campus===cpi.name;}).length;
       h+='<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e0e0e0;border-left:4px solid '+ccc.hd+';cursor:pointer" onclick="state.overviewCampus=\''+esc(cpi.name)+'\';render()">';
       h+='<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:800;color:'+ccc.hd+'">'+esc(cpi.name)+'</span><span style="font-size:20px;font-weight:900;color:'+ccc.hd+'">'+cnt+'명</span></div>';
@@ -2740,7 +2843,7 @@ function renderAgeGradeMatrix(emps,selCp){
   var cross={};ageBands.forEach(function(a){cross[a]={};gradeOrderSorted.forEach(function(g){cross[a][g]=0;});});
   var crossMax=0;
   emps.forEach(function(e){
-    var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
+    var rr=findRawForEmp(e,D().rawRecords||[]);// 이름 괄호주석("오은정(재입사)") 무관하게 UID로 매칭
     var age=rr?calcAge(rr.resident):null;
     var band=getAgeBand(age);
     var g=e.grade||"기타";
@@ -2790,8 +2893,8 @@ function renderTeamSummary(emps,selCp){
     var baseSum=0,netSum=0,tenureSum=0,tenureCnt=0,ageSum=0,ageCnt=0;
     g.emps.forEach(function(e){
       baseSum+=getEmpPayForAvg(e);netSum+=e.netPay||0;
-      var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
-      var t=calcTenureDecimal(getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate));
+      var rr=findRawForEmp(e,D().rawRecords||[]);// 괄호주석 이름 무관 UID 매칭
+      var t=calcTenureDecimal(getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate,e._uid||generateUid(e)));
       if(t!==null){tenureSum+=t;tenureCnt++;}
       var a=rr?calcAge(rr.resident):null;
       if(a!==null){ageSum+=a;ageCnt++;}
@@ -2880,7 +2983,15 @@ function renderTurnoverAnalysis(emps,outRecs,selCp,opts){
   function getNat(e){
     if(e.nationality)return e.nationality;
     var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
-    return(rr&&rr.nationality)||"미상";
+    if(rr&&rr.nationality)return rr.nationality;
+    // 퇴사자는 현재월 raw에 없음 → 전체 월 raw에서 국적 찾기 (과거월에 남아있음)
+    var found="";
+    Object.keys(MONTHS_DATA).some(function(m){
+      var hit=(MONTHS_DATA[m].rawRecords||[]).find(function(r){return r.name===e.name&&r.nationality;});
+      if(hit){found=hit.nationality;return true;}
+      return false;
+    });
+    return found||"미상";
   }
   var byNat={};
   emps.forEach(function(e){var n=getNat(e);if(!byNat[n])byNat[n]={act:0,out:0};byNat[n].act++;});
@@ -3129,9 +3240,9 @@ function renderOvPayAnalysis(emps,selCp){
     });
     if(selCp!=="전체")prevEmps=prevEmps.filter(function(e){return e.campus===selCp;});
   }
-  var curBase=emps.reduce(function(a,e){return a+(e.basePay||0);},0);
+  var curBase=emps.reduce(function(a,e){return a+getEmpPayForAvg(e);},0);// 지급합계(totalPay-자녀교육비)
   var curNet=emps.reduce(function(a,e){return a+(e.netPay||0);},0);
-  var prevBase=prevEmps.reduce(function(a,e){return a+(e.basePay||0);},0);
+  var prevBase=prevEmps.reduce(function(a,e){return a+getEmpPayForAvg(e,null,prevMd&&prevMd.rawRecords);},0);// 지급합계(전월 raw 기준)
   var prevNet=prevEmps.reduce(function(a,e){return a+(e.netPay||0);},0);
   var diffB=curBase-prevBase,diffN=curNet-prevNet;
   var pB=prevBase?Math.round(diffB/prevBase*1000)/10:0;
@@ -3154,11 +3265,14 @@ function renderOvPayAnalysis(emps,selCp){
   // 3. rawRecords 캐시 (이름으로 lookup)
   var rawByName={};
   (D().rawRecords||[]).forEach(function(r){if(r.name)rawByName[r.name]=r;});
+  // emp의 깨끗한 이름이 raw 이름(괄호 주석: "오은정(재입사)" 등)과 안 맞을 때 → UID로 폴백 (동명이인 안전)
+  var _paRaws=D().rawRecords||[];
+  function _rawForEmpPA(e){return rawByName[e.name]||findRawForEmp(e,_paRaws);}
 
   // 4. 인건비 구성 분석 데이터 (rawRecords에서 8개 항목 가져옴, 전체 emps 기반)
   var compose={basePay:0,food:0,extraAllow:0,incentive:0,overTime:0,annualLeave:0,etcAdj:0,childEdu:0,houseAllow:0,carAllow:0,airfare:0,deduct:0};
   emps.forEach(function(e){
-    var rr=rawByName[e.name];
+    var rr=_rawForEmpPA(e);
     if(rr){
       compose.basePay+=rr.basePay||0;
       compose.food+=rr.food||0;
@@ -3187,12 +3301,12 @@ function renderOvPayAnalysis(emps,selCp){
   var ageBand={"20대":0,"30대":0,"40대":0,"50대":0,"60대이상":0,"미상":0};
   var agePay={"20대":{s:0,c:0},"30대":{s:0,c:0},"40대":{s:0,c:0},"50대":{s:0,c:0},"60대이상":{s:0,c:0},"미상":{s:0,c:0}};
   fEmps.forEach(function(e){
-    var rr=rawByName[e.name];
+    var rr=_rawForEmpPA(e);
     // 평균근속: raw의 firstJoin(최초입사일) 우선 — 개인이력 탭과 동일 기준
     var t=calcTenureDecimal(getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate));
     var band=t===null?"1년미만":t<1?"1년미만":t<3?"1~3년":t<5?"3~5년":t<10?"5~10년":t<15?"10~15년":"15년이상";
     tenureBand[band]++;
-    if(e.basePay){tenurePay[band].s+=e.basePay;tenurePay[band].c++;}
+    var _pay=getEmpPayForAvg(e);if(_pay){tenurePay[band].s+=_pay;tenurePay[band].c++;}// 지급합계(totalPay-자녀교육비)
     var age=rr?calcAge(rr.resident):null;
     var ab=age===null?"미상":age<30?"20대":age<40?"30대":age<50?"40대":age<60?"50대":"60대이상";
     ageBand[ab]++;
@@ -3272,15 +3386,15 @@ function renderOvPayAnalysis(emps,selCp){
   // 좌: 캠퍼스별 인건비 비교 (전체) 또는 매출/재원생 분석 (특정 캠퍼스)
   if(selCp==="전체"&&hasPrev){
     h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden;display:flex;flex-direction:column">';
-    h+='<div style="padding:7px 12px;background:#1a3a5c;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:space-between"><span>🏢 캠퍼스별 인건비 비교</span><button onclick="showCampusMetricsModal()" style="padding:3px 10px;background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:4px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" title="모든 캠퍼스 매출/재원생 일괄 입력">✎ 운영 데이터 입력</button></div>';
+    h+='<div style="padding:7px 12px;background:#1a3a5c;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:space-between"><span>🏢 캠퍼스별 인건비 비교 (지급합계)</span><button onclick="showCampusMetricsModal()" style="padding:3px 10px;background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:4px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" title="모든 캠퍼스 매출/재원생 일괄 입력">✎ 운영 데이터 입력</button></div>';
     h+='<div style="display:grid;grid-template-columns:80px 1fr 70px 80px 60px;padding:5px 12px;background:#f5f5f5;font-size:10px;font-weight:700;color:#666"><span>캠퍼스</span><span></span><span style="text-align:right">전월</span><span style="text-align:right">당월</span><span style="text-align:right">증감</span></div>';
     h+='<div style="flex:1">';
     DD().campuses.forEach(function(cpi){
       var ccc=CAMPUS_C[cpi.name]||{hd:"#555"};
       var curN=0,prevN=0;
-      cpi.teams.forEach(function(t){(t.employees||[]).forEach(function(e){curN+=e.netPay||0;});});
+      cpi.teams.forEach(function(t){(t.employees||[]).forEach(function(e){curN+=getEmpPayForAvg(e,cpi.name);});});// 지급합계(totalPay-자녀교육비)
       var prevCp=prevMd.deptData.campuses.find(function(c){return c.name===cpi.name;});
-      if(prevCp)prevCp.teams.forEach(function(t){(t.employees||[]).forEach(function(e){prevN+=e.netPay||0;});});
+      if(prevCp)prevCp.teams.forEach(function(t){(t.employees||[]).forEach(function(e){prevN+=getEmpPayForAvg(e,cpi.name,prevMd.rawRecords);});});// 지급합계(전월)
       var diff=curN-prevN;var pct=prevN?Math.round(diff/prevN*1000)/10:0;
       var c=pctColor(diff);var barPct=Math.min(Math.abs(pct)/20*100,100);
       h+='<div style="display:grid;grid-template-columns:80px 1fr 70px 80px 60px;padding:5px 12px;border-bottom:1px solid #f8f8f8;font-size:10px;align-items:center">';
@@ -3306,7 +3420,7 @@ function renderOvPayAnalysis(emps,selCp){
     // 정규직 + 휴직제외 직원
     var activeEmpsCp=getCampusActiveEmps(selCp);
     var totalCntCp=activeEmpsCp.length;
-    var totalBasePayCp=activeEmpsCp.reduce(function(a,e){return a+(e.basePay||0);},0);
+    var totalBasePayCp=activeEmpsCp.reduce(function(a,e){return a+getEmpPayForAvg(e,selCp);},0);// 지급합계(totalPay-자녀교육비, 매출대비 인건비비율용)
     var totalTenSum=0,tenCnt=0;
     activeEmpsCp.forEach(function(e){
       var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
@@ -3361,10 +3475,10 @@ function renderOvPayAnalysis(emps,selCp){
     h+='</tr>';
     h+='<tr style="background:#f5f5f5">';
     h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;font-weight:700;color:#666;text-align:right;font-size:9px">평균근속</th>';
-    h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;border-right:1px solid #e0e0e0;font-weight:700;color:#666;text-align:right;font-size:9px">평균임금</th>';
+    h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;border-right:1px solid #e0e0e0;font-weight:700;color:#666;text-align:right;font-size:9px">평균지급합계</th>';
     h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;font-weight:700;color:#666;text-align:right;font-size:9px">인원</th>';
     h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;font-weight:700;color:#666;text-align:right;font-size:9px">평균근속</th>';
-    h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;font-weight:700;color:#666;text-align:right;font-size:9px">평균임금</th>';
+    h+='<th style="padding:5px 6px;border-bottom:1px solid #ECECEE;font-weight:700;color:#666;text-align:right;font-size:9px">평균지급합계</th>';
     h+='</tr></thead><tbody>';
     displayGrades.forEach(function(g){
       var gEmps=byGradeCp[g]||[];
@@ -3458,7 +3572,7 @@ function renderOvPayAnalysis(emps,selCp){
 
   // 우: 직책별 급여 편차 (같은 직책 내 차이)
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden;display:flex;flex-direction:column">';
-  h+='<div style="padding:7px 12px;background:#880E4F;color:#fff;font-size:11px;font-weight:700">📏 직책별 급여 편차 <span style="font-size:9px;opacity:.85;font-weight:400;margin-left:4px">(같은 직책 내 차이)</span></div>';
+  h+='<div style="padding:7px 12px;background:#880E4F;color:#fff;font-size:11px;font-weight:700">📏 직책별 급여 편차 <span style="font-size:9px;opacity:.85;font-weight:400;margin-left:4px">(기본월급여 · 같은 직책 내 차이)</span></div>';
   var gradeStats={};
   emps.forEach(function(e){
     if(!e.basePay)return;
@@ -3480,7 +3594,7 @@ function renderOvPayAnalysis(emps,selCp){
   h+='<div style="flex:1;padding:10px">';
   if(!gStatsArr.length){h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">데이터 없음</div>';}
   else{
-    h+='<div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">';
+    h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">';
     h+='<thead><tr style="background:#f5f5f5;position:sticky;top:0;z-index:2"><th style="padding:5px 8px;text-align:left;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">직책</th><th style="padding:5px 6px;text-align:right;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">N</th><th style="padding:5px 6px;text-align:right;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">최소</th><th style="padding:5px 6px;text-align:right;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">중앙</th><th style="padding:5px 6px;text-align:right;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">최대</th><th style="padding:5px 6px;text-align:right;font-weight:700;color:#666;font-size:9px;border-bottom:1px solid #ECECEE">편차</th></tr></thead><tbody>';
     gStatsArr.forEach(function(r,i){
       var gc=GRADE_C[r.g]||{tx:"#666"};
@@ -3522,7 +3636,7 @@ function renderOvPayAnalysis(emps,selCp){
 
   // 좌: 지급합계 분포 (직책 필터 적용)
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden;display:flex;flex-direction:column">';
-  h+='<div style="padding:7px 12px;background:#0288D1;color:#fff;font-size:11px;font-weight:700">📊 지급합계 분포</div>';
+  h+='<div style="padding:7px 12px;background:#0288D1;color:#fff;font-size:11px;font-weight:700">📊 기본월급여 분포</div>';
   if(!fEmps.length){h+='<div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:11px;color:#aaa;padding:20px">데이터 없음</div>';}
   else{
     h+='<div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:5px">';
@@ -3574,6 +3688,7 @@ function renderOvPayAnalysis(emps,selCp){
     var maxA=Math.max.apply(null,aKeys.map(function(k){return ageBand[k];}));
     h+='<div style="flex:1;display:flex;flex-direction:column;gap:3px">';
     aKeys.forEach(function(k,i){
+      if(k==="미상"&&!ageBand[k])return;// 미상 0명이면 항목 숨김
       var v=ageBand[k];var pct=maxA?Math.round(v/maxA*100):0;
       h+='<div style="flex:1;display:flex;align-items:center;gap:6px;font-size:10px;min-height:14px">';
       h+='<span style="min-width:55px;font-weight:700;color:#555">'+k+'</span>';
@@ -3812,7 +3927,7 @@ function getCampusLaborRankInGroup(campusName){
     var cm=(D().campusMetrics||{})[c.name]||{};
     if(!cm.revenue)return null;
     var emps=getCampusActiveEmps(c.name);
-    var totalPay=emps.reduce(function(a,e){return a+(e.basePay||0);},0);
+    var totalPay=emps.reduce(function(a,e){return a+getEmpPayForAvg(e,c.name);},0);// 지급합계(totalPay-자녀교육비)
     return {name:c.name,ratio:totalPay/cm.revenue*100};
   }).filter(function(x){return x!==null;});
   stats.sort(function(a,b){return a.ratio-b.ratio;});// 작을수록 1위
@@ -4005,8 +4120,15 @@ function isOnLeaveNow(emp){
   var cy=parseInt(curM[1]),cmo=parseInt(curM[2]);
   var monthStart=new Date(cy,cmo-1,1);
   var monthEnd=new Date(cy,cmo,0);
+  // 동명이인 구분: 이름이 아니라 동일인물(UID 앞부분=주민+입사일)로 매칭. uid 없으면 이름+캠퍼스 폴백.
+  var empPk=emp._uid?personKeyFromUid(emp._uid):"";
+  var empCp=typeof normalizeCampus==="function"?normalizeCampus(emp.campus):emp.campus;
   for(var i=0;i<recs.length;i++){
-    var r=recs[i];if(r.name!==emp.name)continue;if(!r.startDate)continue;
+    var r=recs[i];if(!r.startDate)continue;
+    var same;
+    if(r._uid&&empPk){same=personKeyFromUid(r._uid)===empPk;}
+    else{var rCp=typeof normalizeCampus==="function"?normalizeCampus(r.campus):r.campus;same=(r.name===emp.name)&&(!r.campus||!emp.campus||rCp===empCp);}
+    if(!same)continue;
     var s=new Date(String(r.startDate).replace(/\./g,"-"));
     var e=r.endDate?new Date(String(r.endDate).replace(/\./g,"-")):new Date(2099,11,31);
     if(s<=monthEnd&&e>=monthStart)return true;
@@ -4019,10 +4141,48 @@ function isReducedWork(emp){
   var g=String(emp.gubn||"");
   return /단시간|육단|단축/.test(g);
 }
+// 텍스트(이름괄호·empId·gubn 등)에서 휴직 종류 코드 추출 — 약어/풀네임 모두. 구체적 종류 우선, 없으면 일반 휴직.
+function _matCatFromText(s){
+  s=String(s||"");
+  if(/육아휴직|육휴/.test(s))return "육휴";
+  if(/출산전후|출산/.test(s))return "출산";
+  if(/육아기|육단|단축/.test(s))return "육단";
+  if(/휴직/.test(s))return "휴직";
+  return null;
+}
+// 휴직/단축 종류 라벨 — 모성보호 레코드 category(육단/육휴/출산/휴직)를 풀네임으로. isOnLeaveNow와 동일 매칭.
+function getLeaveTypeLabel(emp){
+  var catMap={"육휴":"육아휴직","육아휴직":"육아휴직","출산":"출산전후휴가","육단":"육아기 근로시간 단축","휴직":"휴직"};
+  var recs=D().maternityRecords||[];
+  var curM=String(curMonth||"").match(/(\d{4})년\s*(\d+)월/);
+  if(curM){
+    var cy=parseInt(curM[1]),cmo=parseInt(curM[2]);
+    var monthStart=new Date(cy,cmo-1,1),monthEnd=new Date(cy,cmo,0);
+    var empPk=emp._uid?personKeyFromUid(emp._uid):"";
+    var empCp=typeof normalizeCampus==="function"?normalizeCampus(emp.campus):emp.campus;
+    for(var i=0;i<recs.length;i++){
+      var r=recs[i];if(!r.startDate)continue;
+      var same;
+      if(r._uid&&empPk){same=personKeyFromUid(r._uid)===empPk;}
+      else{var rCp=typeof normalizeCampus==="function"?normalizeCampus(r.campus):r.campus;same=(r.name===emp.name)&&(!r.campus||!emp.campus||rCp===empCp);}
+      if(!same)continue;
+      var s=new Date(String(r.startDate).replace(/\./g,"-"));
+      var e=r.endDate?new Date(String(r.endDate).replace(/\./g,"-")):new Date(2099,11,31);
+      if(s<=monthEnd&&e>=monthStart){
+        var cat=r.category;
+        // category가 일반 "휴직"이거나 비어있으면 empId·이름에서 구체 종류(출산/육휴/육단) 재추출 (전수진처럼 NO.칸에 종류 적힌 경우)
+        if(!cat||cat==="휴직"){var c2=_matCatFromText(String(r.empId||"")+" "+String(r.rawName||r.name||""));if(c2)cat=c2;}
+        return catMap[cat]||cat||"휴직";
+      }
+    }
+  }
+  if(isReducedWork(emp))return "육아기 근로시간 단축";
+  return "휴직";
+}
 
 // 급여이력 메모에서 현재월 이전 가장 최근의 변동 (type==='pay') 추출
 function getPrevPayFromNote(emp){
-  var rr=(D().rawRecords||[]).find(function(r){return r.name===emp.name;});
+  var rr=findRawForEmp(emp,D().rawRecords);
   if(!rr)return null;
   var noteMatch=findPayHistoryNoteForRaw(rr);
   if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return null;
@@ -4045,32 +4205,127 @@ function monthKeyToDatePrefix(monthKey){
 }
 
 // 메모에서 변동월에 해당하는 정확한 날짜 추출 (없으면 null)
-function refineChangeDateFromNote(emp,changeMonth){
-  var rr=(D().rawRecords||[]).find(function(r){return r.name===emp.name;});
+function refineChangeDateFromNote(emp,changeMonth,delta){
+  var rr=findRawForEmp(emp,D().rawRecords);
   if(!rr)return null;
   var noteMatch=findPayHistoryNoteForRaw(rr);
   if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return null;
   var parsed=parsePayHistoryNote(noteMatch.note.rawText);
-  var prefix=monthKeyToDatePrefix(changeMonth);
+  var pays=parsed.entries.filter(function(e){return e.type==="pay"&&e.amount&&e.date;});
+  pays.sort(function(a,b){return a.date<b.date?-1:(a.date>b.date?1:0);});
+  // ① 변동액(delta) 일치하는 인상 우선 — 데이터 적용월과 메모 효력일이 몇 달 어긋나도 정확히 잡힘.
+  //    같은 차액이 여러 번이면 가장 최근 항목 사용.
+  if(delta){
+    var best=null;
+    for(var i=1;i<pays.length;i++){if(Math.abs((pays[i].amount-pays[i-1].amount)-delta)<=1)best=pays[i];}
+    if(best)return best.date;
+  }
+  // ② 차액 매칭 실패 시 월 근접(감지월 또는 직전월) — 급여 기산일(당월11~익월10) 지연 보정
+  var prefix=monthKeyToDatePrefix(changeMonth);// 예: "2026-01"
   if(!prefix)return null;
-  // 변동월 정확히 일치하는 pay 엔트리 우선
+  var prevPrefix=null;
+  var cm=String(changeMonth).match(/(\d{4})\D+(\d+)/);
+  if(cm){var y=parseInt(cm[1]),mo=parseInt(cm[2])-1;if(mo<1){mo=12;y--;}prevPrefix=y+"-"+String(mo).padStart(2,"0");}
   var match=null;
-  parsed.entries.forEach(function(e){
-    if(e.type!=="pay"||!e.date)return;
-    if(e.date.indexOf(prefix)===0){if(!match||e.date>match.date)match=e;}
+  pays.forEach(function(e){
+    if(e.date.indexOf(prefix)===0||(prevPrefix&&e.date.indexOf(prevPrefix)===0)){if(!match||e.date>match.date)match=e;}
   });
   return match?match.date:null;
 }
 
-// 인센티브 캐리오버 — 이전월들 거슬러 가며 raw에 잡힌 마지막 incentive 값
+// 동일인물 키 — UID 앞부분(주민7자리_입사일8자리). 이름이 바뀌어도(개명·전배) 동일.
+// 주민 기반 UID면 이름 무관, 폴백(이름_입사일)이면 이름 포함이라 호출부에서 이름 폴백 병행.
+function personKeyFromUid(uid){
+  var p=String(uid||"").split("_");
+  if(p.length>=2)return p[0]+"_"+p[1];
+  return String(uid||"");
+}
+// 날짜 문자열 → YYYYMM 키 ("2025년 3월","2014-08-26","202503" 등 → "202503"). 비교 불가면 ""
+function _ymKey(s){
+  s=String(s||"");
+  var m=s.match(/(\d{4})\D+(\d{1,2})/);
+  if(m)return m[1]+("0"+m[2]).slice(-2);
+  var d=s.replace(/[^0-9]/g,"");
+  return d.length>=6?d.slice(0,6):"";
+}
+// emp에 해당하는 raw 레코드 찾기 — 동명이인 방지. UID 앞부분(주민+입사일) 우선·같은 캠퍼스 우선.
+// uid 없는 레코드만 이름(+캠퍼스)로 폴백. uid 있는데 불일치하면 다른 사람으로 보고 제외(송파 이은영 ≠ 수지 이은영).
+// raw 색인 캐시(배열 참조 기준) — findRawForEmp가 매번 전체 raw를 선형탐색하던 것을 O(1) 조회로.
+// raw가 바뀌면(시트 동기화·_normalizeUids) invalidateTimelineCache에서 새 WeakMap으로 리셋됨.
+var _rawPkIndex=(typeof WeakMap!=="undefined")?new WeakMap():null;
+function _getRawIndex(raws){
+  if(_rawPkIndex){var c=_rawPkIndex.get(raws);if(c)return c;}
+  function _cn(s){return String(s||"").replace(/\(.*\)/g,"").trim();}
+  var byPk={},byName={};
+  for(var i=0;i<raws.length;i++){
+    var r=raws[i];
+    if(r._uid){var pk=personKeyFromUid(r._uid);(byPk[pk]=byPk[pk]||[]).push(r);}
+    else{var nm=_cn(r.name);(byName[nm]=byName[nm]||[]).push(r);}
+  }
+  var idx={byPk:byPk,byName:byName};
+  if(_rawPkIndex)_rawPkIndex.set(raws,idx);
+  return idx;
+}
+function findRawForEmp(emp,raws){
+  if(!raws||!raws.length||!emp)return null;
+  function _cn(s){return String(s||"").replace(/\(.*\)/g,"").trim();}
+  function _cp(c){return typeof normalizeCampus==="function"?normalizeCampus(c):c;}
+  var empPk=emp._uid?personKeyFromUid(emp._uid):"";
+  var empCp=emp.campus?_cp(emp.campus):"";
+  var idx=_getRawIndex(raws);
+  var pool=empPk?(idx.byPk[empPk]||[]):[];
+  if(!pool.length){
+    var nmPool=idx.byName[_cn(emp.name)]||[];
+    pool=empCp?nmPool.filter(function(r){return !r.campus||_cp(r.campus)===empCp;}):nmPool;
+  }
+  if(!pool.length)return null;
+  if(empCp){var hit=pool.find(function(r){return _cp(r.campus)===empCp;});if(hit)return hit;}
+  return pool[0];
+}
+// 인센티브 기준월 — 회계연도(3월~익년2월) 시작인 "그 해 3월" 월키 반환
+// 1~2월이면 전년도 3월, 3~12월이면 당해년도 3월
+function getIncentiveAnchorMonth(monthKey){
+  var m=String(monthKey).match(/(\d{4})년\s*(\d+)월/);
+  if(!m)return null;
+  var y=parseInt(m[1]),mo=parseInt(m[2]);
+  var anchorYear=(mo>=3)?y:(y-1);
+  return anchorYear+"년 3월";
+}
+// 인센티브 캐리오버 — 회계연도(3월~익년2월) 기준. 옛 월을 무한정 거슬러가지 않고 그 해 안에서만.
+// ① 회계연도 내(3월~현재월 직전) 가장 최근 수기 override가 있으면 그 값을 그 해 내내 유지
+//    → 류청락(휴직자)·장영진처럼 3월 raw에 PS가 없어 자동으로 안 잡히는 사람은 수기로 한 번 넣으면 그 해 유지
+// ② override가 없으면 회계연도 시작월(매년 3월)의 값(override > raw)
+//    예) 26년3월~27년2월은 26년3월 값, 26년3월이 0이면 0 (옛 25년3월 값 안 끌어옴)
 function getIncentiveCarryover(emp){
-  var allMonths=Object.keys(MONTHS_DATA).sort(monthCompare);
-  var curIdx=allMonths.indexOf(curMonth);
+  var anchor=getIncentiveAnchorMonth(curMonth);
+  if(!anchor)return 0;
+  function _cni(s){return String(s||"").replace(/\(.*\)/g,"").trim();}
+  var uid=emp._uid||generateUid(emp);
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var curIdx=months.indexOf(curMonth);if(curIdx<0)curIdx=months.length-1;
+  // ① 회계연도 내(현재월 직전→3월) 가장 최근 수기 override
   for(var i=curIdx-1;i>=0;i--){
-    var m=allMonths[i];var md=MONTHS_DATA[m];
-    if(!md||!md.rawRecords)continue;
-    var pastRec=md.rawRecords.find(function(r){return r.name===emp.name;});
-    if(pastRec&&pastRec.incentive&&pastRec.incentive>0)return pastRec.incentive;
+    var m=months[i];
+    if(monthCompare(m,anchor)<0)break;// 회계연도 이전으로는 안 넘어감
+    var mdi=MONTHS_DATA[m];if(!mdi)continue;
+    var ovi=(mdi.gradePayOverrides||{})[uid];
+    if(ovi&&ovi.incentive!==undefined)return ovi.incentive||0;
+  }
+  // ② 회계연도 시작월(3월) 값 — override > raw.
+  //    매칭은 이름이 아니라 UID 앞부분(주민+입사일)=동일인물 기준 → 개명/전배에도 PS가 따라옴
+  //    (예: 목동 "Olivia Hong(홍우리)" 와 분당 "홍우리" 는 동일인물). raw에 uid 없으면 이름 폴백.
+  //    전배로 같은 달 raw가 여러 개면(목동·분당) PS 들어간 쪽 = 최댓값 (PS는 한 캠퍼스에서만 나감).
+  var amd=MONTHS_DATA[anchor];
+  if(amd){
+    var aov=(amd.gradePayOverrides||{})[uid];
+    if(aov&&aov.incentive!==undefined)return aov.incentive||0;
+    var pk=personKeyFromUid(uid);
+    var best=0;
+    (amd.rawRecords||[]).forEach(function(r){
+      var match=r._uid?(personKeyFromUid(r._uid)===pk):(_cni(r.name)===_cni(emp.name));
+      if(match&&(r.incentive||0)>best)best=r.incentive||0;
+    });
+    return best;
   }
   return 0;
 }
@@ -4078,14 +4333,14 @@ function getIncentiveCarryover(emp){
 // 특정 월의 직원 지급합계 (override 우선, raw fallback)
 function getEmpTotalPayForMonth(emp,month){
   var md=MONTHS_DATA[month];if(!md||!md.rawRecords)return null;
-  var rec=md.rawRecords.find(function(r){return r.name===emp.name;});
+  var rec=findRawForEmp(emp,md.rawRecords);
   if(!rec)return null;
   var uid=emp._uid||generateUid(emp);
   var ov=(md.gradePayOverrides||{})[uid]||{};
   var base=ov.monthlyBasePay!==undefined?ov.monthlyBasePay:(rec.monthlyBasePay||rec.basePay||0);
-  var extra=ov.extraAllow!==undefined?ov.extraAllow:(rec.extraAllow||0);
+  var extra=getEffectiveFixedExtra(uid,month);// 고정 기타수당(이어받기, 없으면 0)
   var house=ov.houseAllow!==undefined?ov.houseAllow:(rec.houseAllow||0);
-  var total=ov.totalPay!==undefined?ov.totalPay:(base+extra+house);
+  var total=base+extra+house;// 급여합계 자동합산(이전월도 동일 규칙)
   return total>0?total:null;
 }
 
@@ -4100,8 +4355,12 @@ function getPrevTotalPayAuto(emp,curTotal){
     var pastTotal=getEmpTotalPayForMonth(emp,m);
     if(pastTotal===null)continue;
     if(Math.abs(pastTotal-curTotal)>1){
-      // 변동 감지 — 메모에서 정확한 날짜 찾기
-      var exactDate=refineChangeDateFromNote(emp,lastSameMonth);
+      // 일시적 단월 변동(무급·공제 등 노이즈) 무시 — 더 과거 달이 현재값으로 복귀하면 이 달은 건너뜀
+      var beforeTotal=null;
+      for(var j=i-1;j>=0;j--){var bt=getEmpTotalPayForMonth(emp,allMonths[j]);if(bt!==null){beforeTotal=bt;break;}}
+      if(beforeTotal!==null&&Math.abs(beforeTotal-curTotal)<=1)continue;// 단월 노이즈 → 무시(lastSameMonth 유지)
+      // 진짜 변동 — 메모에서 정확한 날짜 찾기 (변동액=curTotal-pastTotal 로 메모 항목 매칭)
+      var exactDate=refineChangeDateFromNote(emp,lastSameMonth,curTotal-pastTotal);
       return {
         amount:pastTotal,
         date:exactDate||lastSameMonth+" (추정)",
@@ -4114,14 +4373,70 @@ function getPrevTotalPayAuto(emp,curTotal){
   return null;
 }
 
-// 이전 지급합계 — 자동 우선, 실패 시 수기 fallback, 모두 없으면 null
+// 수기 '이전 급여합계' 이어받기 — 가장 최근(현재월 포함) 수기 보정값을 거슬러 찾음
+function getCarriedManualPrev(uid){
+  if(!uid)return null;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(curMonth);if(idx<0)idx=months.length-1;
+  for(var i=idx;i>=0;i--){
+    var md=MONTHS_DATA[months[i]];
+    var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];
+    if(!ov)continue;
+    if(ov.prevNone)return {none:true,base:ov.prevTotalPayBase,month:months[i]};// 변동 없음 명시("-")
+    if(ov.prevTotalPayDate&&ov.prevTotalPay!==undefined&&ov.prevTotalPay>0){
+      return {amount:ov.prevTotalPay,date:ov.prevTotalPayDate,base:ov.prevTotalPayBase,month:months[i]};
+    }
+  }
+  return null;
+}
+// 이전 지급합계 — 수기 보정(이어받기) 최우선 → 자동 추정 → 레거시 → null
+// 수기 보정은 '보정 당시 급여합계(base)'와 현재 급여합계가 같을 때만 유효 = 그 사이 새 인상이 없었다는 뜻.
+// 새 인상이 생겨 현재 급여합계가 달라지면 자동 추정으로 넘어가, 그 달에 다시 수기 보정하도록 유도.
+// 메모 기반 이전급여 — 자동 감지(월별 비교)가 실패할 때 보조 출처. 데이터 범위 이전에 인상이 있었던 경우 등.
+// 메모의 마지막 두 인상으로: 변동급여일=최근 인상일, 이전급여합계=현재합계-(최근 메모금액-직전 메모금액). (고정수당 불변 가정)
+function getPrevPayFromMemo(emp,curTotal){
+  if(!curTotal)return null;
+  var rr=findRawForEmp(emp,D().rawRecords);
+  if(!rr)return null;
+  var noteMatch=findPayHistoryNoteForRaw(rr);
+  if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return null;
+  var parsed=parsePayHistoryNote(noteMatch.note.rawText);
+  var pays=parsed.entries.filter(function(e){return e.type==="pay"&&e.amount&&e.date;});
+  if(pays.length<2)return null;
+  pays.sort(function(a,b){return a.date<b.date?-1:(a.date>b.date?1:0);});
+  var last=pays[pays.length-1],prv=pays[pays.length-2];
+  var prevTotal=curTotal-(last.amount-prv.amount);
+  if(prevTotal<=0)return null;
+  return {amount:prevTotal,date:last.date,source:"note",exactDate:true};
+}
 function getPrevTotalPay(emp,curTotal){
-  var auto=getPrevTotalPayAuto(emp,curTotal);
-  if(auto)return auto;
   var uid=emp._uid||generateUid(emp);
+  var man=getCarriedManualPrev(uid);
+  if(man){
+    var stillValid=(man.base===undefined||man.base===null)||(Math.abs((man.base||0)-(curTotal||0))<=1);
+    if(stillValid){
+      if(man.none)return {none:true,source:"manual"};// 변동 없음 명시 → 표시는 "-"
+      return {amount:man.amount,date:man.date,source:"manual",exactDate:true};
+    }
+  }
+  var auto=getPrevTotalPayAuto(emp,curTotal);
+  if(auto&&auto.exactDate)return auto;// 정확한 자동값(메모로 날짜 확정)은 신뢰
+  // 자동이 '추정'이거나 실패면 메모 기반 우선 — 추정 자동값보다 메모가 정확(엉뚱한 단발 변동 오인 방지)
+  var memo=getPrevPayFromMemo(emp,curTotal);
+  if(memo)return memo;
+  if(auto)return auto;// 메모도 없으면 추정 자동값이라도 사용
+  // 레거시: 현재월에 날짜 없이 금액만 수기 저장된 경우
   var ov=getGradePayOverride(uid);
   if(ov.prevTotalPay!==undefined&&ov.prevTotalPay>0){
     return {amount:ov.prevTotalPay,date:ov.prevTotalPayDate||"수기",source:"manual",exactDate:!!ov.prevTotalPayDate};
+  }
+  // 신규 입사: 메모에 급여가 1개뿐이고 그 날짜가 최초입사일과 같으면 = 첫 급여(인상 아님) → "-" 표시
+  var _rrN=findRawForEmp(emp,D().rawRecords);
+  var _fj=_rrN?getEmpFirstJoinDate(emp.name,(_rrN.firstJoin)||emp.joinDate,uid):null;
+  var _nmN=_rrN?findPayHistoryNoteForRaw(_rrN):null;
+  if(_fj&&_nmN&&_nmN.note&&_nmN.note.rawText){
+    var _paysN=parsePayHistoryNote(_nmN.note.rawText).entries.filter(function(e){return e.type==="pay"&&e.date;});
+    if(_paysN.length===1&&_ymKey(_paysN[0].date)&&_ymKey(_paysN[0].date)===_ymKey(_fj))return {none:true,source:"note"};
   }
   return null;
 }
@@ -4132,27 +4447,102 @@ function getGradePayOverride(uid){
   return md.gradePayOverrides[uid]||{};
 }
 
+// 고정 기타수당 — "이 달부터 얼마"(carry-forward/이어받기). 입력 없으면 0. 변동점만 저장됨.
+// 효과적인 변동점 override 항목 반환 (금액 fixedExtra + 내역 fixedExtraNote 가 같이 들어있음)
+function getEffectiveFixedExtraEntry(uid,monthKey){
+  if(!uid)return null;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length-1;
+  for(var i=idx;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.fixedExtra!==undefined)return ov;}
+  return null;
+}
+function getEffectiveFixedExtra(uid,monthKey){var e=getEffectiveFixedExtraEntry(uid,monthKey);return e?(e.fixedExtra||0):0;}
+// 고정 기타수당 내역(무슨 수당인지) — 금액과 같은 변동점에 저장됨. 금액과 함께 이어받기
+function getEffectiveFixedExtraNote(uid,monthKey){var e=getEffectiveFixedExtraEntry(uid,monthKey);return e?(e.fixedExtraNote||""):"";}
+// 현재 월 직전까지의 이어받기 값 (변동점 판정용)
+function getCarriedFixedExtraBefore(uid,monthKey){
+  if(!uid)return 0;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length;
+  for(var i=idx-1;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.fixedExtra!==undefined)return ov.fixedExtra||0;}
+  return 0;
+}
+// 현재 월 직전까지의 이어받기 내역 (변동점 판정용)
+function getCarriedFixedExtraNoteBefore(uid,monthKey){
+  if(!uid)return "";
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length;
+  for(var i=idx-1;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.fixedExtra!==undefined)return ov.fixedExtraNote||"";}
+  return "";
+}
+// 비고수당(비고 금액) — 고정수당처럼 이어받기(carry-forward). 변동점만 저장. 급여합계엔 미포함
+function getEffectiveBigoEntry(uid,monthKey){
+  if(!uid)return null;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length-1;
+  for(var i=idx;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.bigoExtra!==undefined)return ov;}
+  return null;
+}
+function getEffectiveBigoExtra(uid,monthKey){var e=getEffectiveBigoEntry(uid,monthKey);return e?(e.bigoExtra||0):0;}
+function getEffectiveBigoExtraNote(uid,monthKey){var e=getEffectiveBigoEntry(uid,monthKey);return e?(e.bigoExtraNote||""):"";}
+function getCarriedBigoExtraBefore(uid,monthKey){
+  if(!uid)return 0;
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length;
+  for(var i=idx-1;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.bigoExtra!==undefined)return ov.bigoExtra||0;}
+  return 0;
+}
+function getCarriedBigoExtraNoteBefore(uid,monthKey){
+  if(!uid)return "";
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var idx=months.indexOf(monthKey);if(idx<0)idx=months.length;
+  for(var i=idx-1;i>=0;i--){var md=MONTHS_DATA[months[i]];var ov=md&&md.gradePayOverrides&&md.gradePayOverrides[uid];if(ov&&ov.bigoExtra!==undefined)return ov.bigoExtraNote||"";}
+  return "";
+}
 // 표시값 머지 — override 있으면 우선, 없으면 원본
 function getGradePayMerged(emp){
   var uid=emp._uid||generateUid(emp);
   var ov=getGradePayOverride(uid);
-  var rr=(D().rawRecords||[]).find(function(r){return r.name===emp.name;});
+  var rr=findRawForEmp(emp,D().rawRecords);
   var base=ov.monthlyBasePay!==undefined?ov.monthlyBasePay:(emp.monthlyBasePay||emp.basePay||0);
-  var extra=ov.extraAllow!==undefined?ov.extraAllow:((rr&&rr.extraAllow)||0);
+  var extra=getEffectiveFixedExtra(uid,curMonth);// 고정 기타수당(이어받기, 없으면 0)
+  var extraNote=getEffectiveFixedExtraNote(uid,curMonth);// 고정 기타수당 내역(무슨 수당인지)
   var house=ov.houseAllow!==undefined?ov.houseAllow:((rr&&rr.houseAllow)||0);
   var totalAuto=base+extra+house;
-  var total=ov.totalPay!==undefined?ov.totalPay:totalAuto;
+  var total=totalAuto;// 급여합계는 기본월급여+기타수당(고정)+주택보조금 자동합산 — 수동 override 사용 안 함
   // 인센티브: override > 현재월 raw > 이전월 캐리오버
   var inc;var incSrc="none";
   if(ov.incentive!==undefined){inc=ov.incentive;incSrc="override";}
   else if(rr&&rr.incentive&&rr.incentive>0){inc=rr.incentive;incSrc="raw";}
   else{inc=getIncentiveCarryover(emp);if(inc>0)incSrc="carryover";}
-  return {monthlyBasePay:base,extraAllow:extra,houseAllow:house,totalPay:total,totalAuto:totalAuto,incentive:inc,_incSrc:incSrc};
+  return {monthlyBasePay:base,extraAllow:extra,extraNote:extraNote,houseAllow:house,totalPay:total,totalAuto:totalAuto,incentive:inc,_incSrc:incSrc,bigoExtra:getEffectiveBigoExtra(uid,curMonth),bigoExtraNote:getEffectiveBigoExtraNote(uid,curMonth)};
 }
 
 // 편집 모드 전환
-function startGradePayEdit(uid){state.gradePayEditingUid=uid;render();setTimeout(function(){var el=document.getElementById("gp_"+uid+"_monthlyBasePay");if(el)el.focus();},0);}
-function cancelGradePayEdit(){state.gradePayEditingUid=null;render();}
+function startGradePayEdit(uid){
+  function _focus(){setTimeout(function(){var el=document.getElementById("gp_"+uid+"_monthlyBasePay");if(el)el.focus();},0);}
+  // 그 행만 다시 그리기(전체 render 회피). 행이 DOM에 없으면 안전하게 전체 render.
+  if(typeof updateGpRow==="function"&&document.getElementById("gprow_"+uid)){
+    var prevEdit=state.gradePayEditingUid;
+    state.gradePayEditingUid=uid;
+    if(prevEdit&&prevEdit!==uid)updateGpRow(prevEdit);// 이전 편집행 → 표시모드 복귀
+    updateGpRow(uid);// 새 행 → 편집모드
+    _focus();
+  }else{
+    state.gradePayEditingUid=uid;render();_focus();
+  }
+}
+function cancelGradePayEdit(){
+  var u=state.gradePayEditingUid;state.gradePayEditingUid=null;
+  if(u&&typeof updateGpRow==="function"&&document.getElementById("gprow_"+u))updateGpRow(u);
+  else render();
+}
+// 편집 중 급여합계 실시간 갱신 — 기본월급여+기타수당(고정)+주택보조금
+function gpRecalcTotal(uid){
+  function gv(f){var el=document.getElementById("gp_"+uid+"_"+f);if(!el)return 0;var v=String(el.value).replace(/[^\d.-]/g,"");return Math.round(parseFloat(v)||0);}
+  var disp=document.getElementById("gp_"+uid+"_totalPayDisp");
+  if(disp)disp.textContent=(gv("monthlyBasePay")+gv("fixedExtra")+gv("houseAllow")).toLocaleString();
+}
 
 // 저장
 function saveGradePayEdit(uid){
@@ -4160,10 +4550,50 @@ function saveGradePayEdit(uid){
   function getNum(field){var el=document.getElementById("gp_"+uid+"_"+field);if(!el)return undefined;var v=String(el.value).replace(/[^\d.-]/g,"");return v===""?undefined:Math.round(parseFloat(v)||0);}
   function getStr(field){var el=document.getElementById("gp_"+uid+"_"+field);return el?String(el.value):undefined;}
   var ov={};
-  ["monthlyBasePay","extraAllow","houseAllow","totalPay","incentive","prevTotalPay"].forEach(function(f){var v=getNum(f);if(v!==undefined&&v>0)ov[f]=v;});
-  // prevTotalPayDate (텍스트)
+  // 급여합계(totalPay)는 자동합산이므로 저장하지 않음 (기본월급여+기타수당+주택보조금)
+  // prevTotalPay는 아래에서 날짜와 함께 별도 처리
+  ["monthlyBasePay","houseAllow","incentive"].forEach(function(f){var v=getNum(f);if(v!==undefined&&v>0)ov[f]=v;});
+  // 비고(금액+내역) — 고정수당처럼 이어받기. 금액 또는 내역이 직전 이어받기 값과 다르면 변동점으로 저장
+  var beEl=document.getElementById("gp_"+uid+"_bigoExtra");
+  var bnEl=document.getElementById("gp_"+uid+"_bigoExtraNote");
+  if(beEl){var beRaw=String(beEl.value).replace(/[^\d.-]/g,"");if(beRaw!==""){
+    var beEntered=Math.round(parseFloat(beRaw)||0);
+    var bnNote=bnEl?String(bnEl.value).trim():"";
+    if(beEntered!==getCarriedBigoExtraBefore(uid,curMonth)||bnNote!==getCarriedBigoExtraNoteBefore(uid,curMonth)){ov.bigoExtra=beEntered;ov.bigoExtraNote=bnNote;}
+  }}
+  // 고정 기타수당 — 변동점만 저장(이어받기 값과 같으면 저장 안 함, 0은 명시 종료로 저장)
+  // 금액 또는 내역(무슨 수당) 중 하나라도 직전 이어받기 값과 다르면 변동점으로 저장
+  var feEl=document.getElementById("gp_"+uid+"_fixedExtra");
+  var fnEl=document.getElementById("gp_"+uid+"_fixedExtraNote");
+  if(feEl){var feRaw=String(feEl.value).replace(/[^\d.-]/g,"");if(feRaw!==""){
+    var feEntered=Math.round(parseFloat(feRaw)||0);
+    var feNote=fnEl?String(fnEl.value).trim():"";
+    if(feEntered!==getCarriedFixedExtraBefore(uid,curMonth)||feNote!==getCarriedFixedExtraNoteBefore(uid,curMonth)){ov.fixedExtra=feEntered;ov.fixedExtraNote=feNote;}
+  }}
+  // 이전 변동급여일 + 이전 급여합계 — 금액이 있으면 저장(유실 방지). 추정/클릭입력 행에서 금액만 고쳐도 저장됨.
+  // 날짜는 입력값 우선 → 없으면 기존/자동 날짜 유지(추정 표기는 제거). prevTotalPayBase=보정 당시 급여합계(새 인상 감지용).
   var pdEl=document.getElementById("gp_"+uid+"_prevTotalPayDate");
-  if(pdEl&&pdEl.value.trim())ov.prevTotalPayDate=pdEl.value.trim();
+  var ptEl=document.getElementById("gp_"+uid+"_prevTotalPay");
+  if(pdEl||ptEl){
+    var _pdv=pdEl?pdEl.value.trim():"";
+    var _ptv=getNum("prevTotalPay");
+    var _tEl=document.getElementById("gp_"+uid+"_totalPayDisp");
+    var _curT=_tEl?(parseInt(String(_tEl.textContent).replace(/[^\d]/g,""))||0):0;
+    if(_pdv==="-"||_pdv==="—"){
+      // 변동급여일에 "-" = "변동 없음" 명시 → 이전급여합계도 "-"
+      ov.prevNone=true;
+      if(_curT>0)ov.prevTotalPayBase=_curT;
+    }else if(_ptv!==undefined&&_ptv>0){
+      ov.prevTotalPay=_ptv;
+      if(_pdv)ov.prevTotalPayDate=_pdv;
+      else{
+        var _emp=getAllEmployees().find(function(x){return (x._uid||generateUid(x))===uid;});
+        var _bp=_emp?getPrevTotalPay(_emp,_curT):null;
+        ov.prevTotalPayDate=(_bp&&_bp.date)?String(_bp.date).replace(/\s*\(.*\)/,""):"수기";
+      }
+      if(_curT>0)ov.prevTotalPayBase=_curT;
+    }
+  }
   // 비고는 직원 객체에 (직원별 고정)
   var rmk=getStr("remark");
   if(rmk!==undefined){
@@ -4176,19 +4606,69 @@ function saveGradePayEdit(uid){
   state.gradePayEditingUid=null;
   pushUndo("급여 수정");
   scheduleSave();
+  invalidateGpRowCache();
   render();
   notify("✓ 저장됨","ok");
 }
 
+function exportGradePayCSV(){
+  var selCp=state.overviewCampus||"전체";
+  var emps=getAllEmployees();
+  if(selCp!=="전체")emps=emps.filter(function(e){return e.campus===selCp;});
+  emps=emps.filter(function(e){return String(e.gubn||"").trim()==="정규직"&&String(e.empId||"").indexOf("퇴사")<0;});
+  var selGrade=state.gradePayFilter||"전체";
+  if(selGrade!=="전체")emps=emps.filter(function(e){return e.grade===selGrade;});
+  if(!emps.length){notify("데이터 없음","warn");return;}
+  var rows=[["캠퍼스","이름","직책","최초입사일","근속","캠퍼스입사일","기본월급여","기타수당(고정)","기타수당내역","주택보조금","급여합계","변동급여일","이전급여합계","인상금액","인상률","인센티브","비고금액","비고내역","비고","국적"]];
+  emps.forEach(function(e){
+    var m=getGradePayMerged(e),prev=getPrevTotalPay(e,m.totalPay);
+    var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
+    var firstJoin=getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate,e._uid||generateUid(e));
+    var raiseAmt=(prev&&prev.amount)?(m.totalPay-prev.amount):"";
+    var raisePct=(prev&&prev.amount)?(Math.round((m.totalPay-prev.amount)/prev.amount*1000)/10+"%"):"";
+    rows.push([e.campus||"",String(e.name).split("(")[0].trim(),e.grade||"",firstJoin||"",fmtTenureYMD(firstJoin),e.joinDate||"",m.monthlyBasePay||0,m.extraAllow||0,m.extraNote||"",m.houseAllow||0,m.totalPay||0,(prev&&prev.date)||"",(prev&&prev.amount)||"",raiseAmt,raisePct,m.incentive||0,m.bigoExtra||0,m.bigoExtraNote||"",e.remark||"",e.nationality||""]);
+  });
+  var csv=rows.map(function(r){return r.map(function(c){return'"'+String(c==null?"":c).replace(/"/g,'""')+'"';}).join(",");}).join("\n");
+  var blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=curMonth+"_급여직책별.csv";a.click();URL.revokeObjectURL(url);
+}
 function renderGradePayTab(emps,selCp,cc){
   // 정규직 + 사번에 '퇴사' 미포함 직원만
+  var GP_EXCLUDE_GRADES=["POLY안전선생님","미화","조교","셔틀기사","기사"];
   emps=emps.filter(function(e){
     if(String(e.gubn||"").trim()!=="정규직")return false;
     if(String(e.empId||"").indexOf("퇴사")>=0)return false;
+    if(GP_EXCLUDE_GRADES.indexOf(e.grade)>=0)return false;// 제외 직책(인원 없는 직책)
+    if(getLeaveTypeLabel(e)==="육아기 근로시간 단축")return false;// 육아기근로시간단축 인원 제외
     return true;
   });
-  // 직책 드롭박스 (캠퍼스는 부모에서 처리)
-  var allGrades=["전체"].concat(GRADE_ORDER.filter(function(g){return GRADE_C[g];}));
+  // 전배 중복 제거 — 같은 사람이 이번 달 2개 캠퍼스에 잡힌 경우, 인사발령(출발→도착) 기록이 있으면 '출발 캠퍼스' 행만 제거.
+  // 발령 기록 없는 중복(겸직 등)은 건드리지 않음. 매칭은 personKey(주민+입사일)로 동명이인/캠퍼스분리 안전.
+  (function(){
+    function _ncp(c){return typeof normalizeCampus==="function"?normalizeCampus(c):c;}
+    function _pk(e){return personKeyFromUid(e._uid||generateUid(e));}
+    var cpsByPk={};
+    emps.forEach(function(e){var k=_pk(e);(cpsByPk[k]=cpsByPk[k]||{})[_ncp(e.campus)]=true;});
+    if(!Object.keys(cpsByPk).some(function(k){return Object.keys(cpsByPk[k]).length>1;}))return;// 중복 없음
+    // 발령(전근) 기록이 아직 없을 수 있으니 보장 — 인사발령 탭과 동일하게 자동감지 채움
+    if(typeof ensureAutoTransfers==="function"){try{ensureAutoTransfers();}catch(e){}}
+    var transByPk={};
+    (D().transferRecords||[]).forEach(function(t){
+      if(!t._uid||!t.prevCampus||!t.campus)return;
+      var k=personKeyFromUid(t._uid);
+      (transByPk[k]=transByPk[k]||[]).push({from:_ncp(t.prevCampus),to:_ncp(t.campus)});
+    });
+    emps=emps.filter(function(e){
+      var k=_pk(e);
+      var cps=Object.keys(cpsByPk[k]||{});
+      if(cps.length<=1)return true;// 중복 아님 → 유지
+      var ec=_ncp(e.campus);
+      // 이 행 캠퍼스가 '출발'이고 그 '도착'이 현재 캠퍼스 목록에 있으면 = 전배 출발행 → 제거
+      var isOrigin=(transByPk[k]||[]).some(function(x){return x.from===ec&&cps.indexOf(x.to)>=0;});
+      return !isOrigin;
+    });
+  })();
+  // 직책 드롭박스 (캠퍼스는 부모에서 처리) — 제외 직책은 목록에서도 뺌
+  var allGrades=["전체"].concat(GRADE_ORDER.filter(function(g){return GRADE_C[g]&&GP_EXCLUDE_GRADES.indexOf(g)<0;}));
   var selGrade=state.gradePayFilter||"전체";
   var filteredEmps=selGrade==="전체"?emps:emps.filter(function(e){return e.grade===selGrade;});
 
@@ -4201,6 +4681,7 @@ function renderGradePayTab(emps,selCp,cc){
   });
   gradeDropH+='</select>';
   gradeDropH+='<span style="font-size:11px;color:#aaa">'+filteredEmps.length+'명</span>';
+  gradeDropH+='<button onclick="exportGradePayCSV()" style="margin-left:auto;padding:5px 12px;border:1px solid #ddd;border-radius:7px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;font-weight:700">⬇ CSV</button>';
   gradeDropH+='</div>';
 
   var totalBase=filteredEmps.reduce(function(a,e){return a+(e.basePay||0);},0);
@@ -4222,11 +4703,24 @@ function renderGradePayTab(emps,selCp,cc){
     if(isOnLeaveNow(e)||isReducedWork(e))leaveEmps.push(e);
     else activeEmps.push(e);
   });
-  // 정렬 전에 머지값/이전급여 한 번만 계산해서 캐시 (렉 완화)
-  activeEmps.forEach(function(e){e._mergedCache=getGradePayMerged(e);e._prevCache=getPrevTotalPay(e,e._mergedCache.totalPay);});
-  leaveEmps.forEach(function(e){e._mergedCache=getGradePayMerged(e);e._prevCache=getPrevTotalPay(e,e._mergedCache.totalPay);});
-  // 활성: 지급합계 내림차순, 동률시 입사일 빠른순
+  // 머지값/이전급여 계산 — 편집 토글 시 재계산 방지용 지속 캐시(uid 기준, 데이터/월 변경 시 무효화)
+  if(_gpRowCache===null||_gpRowCacheMonth!==curMonth){_gpRowCache={};_gpRowCacheMonth=curMonth;}
+  function _gpCompute(e){
+    var uid=e._uid||generateUid(e);
+    if(_gpRowCache[uid]){e._mergedCache=_gpRowCache[uid].merged;e._prevCache=_gpRowCache[uid].prev;return;}
+    e._mergedCache=getGradePayMerged(e);e._prevCache=getPrevTotalPay(e,e._mergedCache.totalPay);
+    _gpRowCache[uid]={merged:e._mergedCache,prev:e._prevCache};
+  }
+  activeEmps.forEach(_gpCompute);
+  leaveEmps.forEach(_gpCompute);
+  // 활성 정렬:
+  //  - 직책 필터 "전체": 직책(GRADE_ORDER) → 같은 직책 안에서 지급합계 내림차순 → 입사일
+  //  - 특정 직책: 지급합계 내림차순 → 입사일
   activeEmps.sort(function(a,b){
+    if(selGrade==="전체"){
+      var ga=gradeOrderIdx(a.grade),gb=gradeOrderIdx(b.grade);
+      if(ga!==gb)return ga-gb;
+    }
     if(a._mergedCache.totalPay!==b._mergedCache.totalPay)return b._mergedCache.totalPay-a._mergedCache.totalPay;
     var da=new Date(String(a.joinDate||"9999").replace(/\./g,"-"));
     var db=new Date(String(b.joinDate||"9999").replace(/\./g,"-"));
@@ -4239,73 +4733,148 @@ function renderGradePayTab(emps,selCp,cc){
   });
 
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden">';
-  h+='<div style="padding:8px 14px;background:#455A64;color:#fff;font-size:11px;font-weight:700">직원별 급여 상세 <span style="font-size:9px;opacity:.85;font-weight:400;margin-left:6px">(지급합계 내림차순 / 동률시 입사일 빠른 순 · 우측 [✎ 편집] 버튼 클릭)</span></div>';
+  h+='<div style="padding:8px 14px;background:#455A64;color:#fff;font-size:11px;font-weight:700">직원별 급여 상세 <span style="font-size:9px;opacity:.85;font-weight:400;margin-left:6px">(급여합계 내림차순 / 동률시 입사일 빠른 순 · 우측 [✎ 편집] 버튼 클릭)</span></div>';
   h+='<div style="overflow-x:auto;max-height:600px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:10px;white-space:nowrap">';
-  h+='<thead><tr style="background:#f5f5f5;position:sticky;top:0;z-index:5">';
-  var cols=[
-    ["캠퍼스","left",55],["이름","left",65],["직책","left",70],
-    ["최초입사일","left",78],["근속","left",105],["캠퍼스 입사일","left",78],
-    ["기본월급여","right",80],["기타수당","right",70],["주택보조금","right",75],
-    ["지급합계","right",85],["이전 변동급여일","right",85],["이전 지급합계","right",80],
-    ["인상금액","right",75],["인상률","right",55],["인센티브(PS)","right",75],
-    ["비고","left",120],["국적","left",55]
-  ];
-  cols.forEach(function(c){h+='<th style="padding:5px 6px;font-weight:700;color:#555;border-bottom:1px solid #ECECEE;font-size:9px;min-width:'+c[2]+'px;text-align:'+c[1]+'">'+c[0]+'</th>';});
-  h+='<th style="padding:5px 6px;font-size:9px;min-width:90px;text-align:center;border-bottom:1px solid #ECECEE;color:#555">동작</th>';
+  h+='<thead>';
+  // 상위 그룹 헤더 (2단 헤더)
+  h+='<tr style="position:sticky;top:0;z-index:5">';
+  h+='<th colspan="6" style="padding:4px 8px;font-weight:800;color:#1a3a5c;background:#EEF2FF;border-bottom:1px solid #ECECEE;font-size:10px;text-align:center;letter-spacing:-.2px">👤 기본 정보</th>';
+  h+='<th colspan="4" style="padding:4px 8px;font-weight:800;color:#1565C0;background:#E3F2FD;border-bottom:1px solid #ECECEE;font-size:10px;text-align:center;letter-spacing:-.2px">💰 당월 급여</th>';
+  h+='<th colspan="4" style="padding:4px 8px;font-weight:800;color:#6A1B9A;background:#F3E5F5;border-bottom:1px solid #ECECEE;font-size:10px;text-align:center;letter-spacing:-.2px">📈 이전·인상</th>';
+  h+='<th colspan="4" style="padding:4px 8px;font-weight:800;color:#00838F;background:#E0F7FA;border-bottom:1px solid #ECECEE;font-size:10px;text-align:center;letter-spacing:-.2px">📎 기타</th>';
+  h+='<th rowspan="2" style="padding:5px 6px;font-size:9px;min-width:90px;text-align:center;border-bottom:1px solid #ECECEE;color:#555;background:#f5f5f5;position:sticky;right:0;z-index:6">동작</th>';
+  h+='</tr>';
+  // 컬럼명 행 (상위 헤더 높이만큼 top 오프셋)
+  h+='<tr style="background:#f5f5f5;position:sticky;top:23px;z-index:5">';
+  var cols=GP_COLS;
+  // 연속된 동일 라벨(예: 비고 2칸)은 colspan으로 합쳐 헤더 1개만 표시
+  var ci=0;
+  while(ci<cols.length){
+    var c=cols[ci];
+    var span=1;
+    while(ci+span<cols.length&&cols[ci+span][0]===c[0]&&c[0]!=="")span++;
+    var mw=0;for(var mk=0;mk<span;mk++)mw+=cols[ci+mk][2];
+    var stickyStyle='';
+    if(ci===0)stickyStyle=';position:sticky;left:0;background:#f5f5f5;z-index:6';
+    else if(ci===1)stickyStyle=';position:sticky;left:'+cols[0][2]+'px;background:#f5f5f5;z-index:6';
+    h+='<th colspan="'+span+'" style="padding:5px 6px;font-weight:700;color:#555;border-bottom:1px solid #ECECEE;font-size:9px;min-width:'+mw+'px;text-align:'+(span>1?"center":c[1])+stickyStyle+'">'+c[0]+'</th>';
+    ci+=span;
+  }
   h+='</tr></thead><tbody>';
 
-  function gpRow(e,isLeave){
+  // ===== 합계 행 (제목 바로 아래) — 필터된 전체(활성+휴직) 기준. 인상률은 합계가 아닌 전체 인상율 =====
+  (function(){
+    var sB=0,sExtra=0,sHouse=0,sTotal=0,sPrev=0,sRaise=0,sInc=0,sPrevBase=0;
+    filteredEmps.forEach(function(e){
+      var m=e._mergedCache||getGradePayMerged(e);
+      var p=e._prevCache;
+      sB+=m.monthlyBasePay||0;sExtra+=m.extraAllow||0;sHouse+=m.houseAllow||0;
+      sTotal+=m.totalPay||0;sInc+=m.incentive||0;
+      if(p&&p.amount){sPrev+=p.amount;sPrevBase+=p.amount;sRaise+=(m.totalPay||0)-p.amount;}
+    });
+    var sPct=sPrevBase>0?Math.round(sRaise/sPrevBase*1000)/10:null;
+    var SB="#FFF9C4";
+    var rc=sRaise>0?"#1565C0":(sRaise<0?"#C62828":"#888");
+    var pc=(sPct>0)?"#1565C0":((sPct<0)?"#C62828":"#888");
+    var ST='position:sticky;top:45px;z-index:4;background:'+SB+';';// 헤더(0,23px) 아래에 고정
+    var STL='position:sticky;top:45px;left:0;z-index:5;background:'+SB+';';
+    h+='<tr style="background:'+SB+';font-weight:800;border-bottom:2px solid #F9A825">';
+    h+='<td colspan="2" style="'+STL+'padding:5px 6px;font-size:10px;color:#5D4037;box-shadow:2px 0 4px -2px rgba(0,0,0,0.08)">합계 ('+filteredEmps.length+'명)</td>';
+    h+='<td colspan="4" style="'+ST+'"></td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#1a3a5c">'+fmtN(sB)+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#1a3a5c">'+fmtN(sExtra)+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#1a3a5c">'+fmtN(sHouse)+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#1a3a5c">'+fmtN(sTotal)+'</td>';
+    h+='<td style="'+ST+'"></td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#6A1B9A">'+fmtN(sPrev)+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:'+rc+'">'+(sRaise?(sRaise>0?"+":"")+fmtN(sRaise):"-")+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:'+pc+'" title="전체 인상율 = 인상금액 합계 ÷ 이전 급여합계">'+(sPct!==null?(sPct>0?"+":"")+sPct+"%":"-")+'</td>';
+    h+='<td style="'+ST+'padding:5px 6px;text-align:right;color:#3F51B5">'+fmtN(sInc)+'</td>';
+    h+='<td colspan="4" style="'+ST+'"></td>';
+    h+='</tr>';
+  })();
+
+  function gpRow(e,isLeave,idx){h+=gpRowHTML(e,isLeave,idx,editingUid,cols);return;/* ↓ 본문은 최상위 gpRowHTML로 이전됨 — 아래는 미도달(미사용) */
     var uid=e._uid||generateUid(e);
     var isEditing=editingUid===uid;
-    var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
+    var rr=findRawForEmp(e,D().rawRecords);
     var firstJoin=getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate);
     var tenStr=fmtTenureYMD(firstJoin);
     var merged=e._mergedCache||getGradePayMerged(e);
     var prev=e._prevCache!==undefined?e._prevCache:getPrevTotalPay(e,merged.totalPay);
     var raiseAmt=(prev&&prev.amount)?merged.totalPay-prev.amount:null;
     var raisePct=(prev&&prev.amount)?Math.round((merged.totalPay-prev.amount)/prev.amount*1000)/10:null;
+    // 이전 변동급여일이 최초입사일과 같으면(연·월) = 실제 인상 아님 → 이전급여일·합계·인상 모두 "-"
+    var prevIsJoin=prev&&_ymKey(firstJoin)&&_ymKey(prev.date)===_ymKey(firstJoin);
+    if(prevIsJoin){raiseAmt=null;raisePct=null;}
+    // 이전 변동급여일이 현재 보는 연도보다 이전 연도면 약한 빨강으로 강조(올해 변동 없음)
+    var _curYear=parseInt((String(curMonth).match(/(\d{4})/)||[])[1])||0;
+    var _prevYear=prev?(parseInt((String(prev.date).match(/(\d{4})/)||[])[1])||0):0;
+    var prevOldYear=prev&&!prevIsJoin&&_prevYear&&_curYear&&_prevYear<_curYear;
     var gc=GRADE_C[e.grade]||{tx:"#666"};
-    var rowBg=isEditing?"#FFF8E1":(isLeave?"#FAFAFA":"");
+    var rowBg=isEditing?"#FFF8E1":(isLeave?"#FAFAFA":(idx%2?"#f0f0f0":""));
+    var stickyBg=rowBg||"#fff";
 
-    function inp(field,val,isNum){
+    function inp(field,val,isNum,extraAttr){
       var v=isNum?(val||0):(val||"");
-      return '<input id="gp_'+esc(uid)+'_'+field+'" type="'+(isNum?"number":"text")+'" value="'+(isNum?(v||""):esc(String(v)))+'" style="width:100%;padding:2px 4px;border:1.5px solid #2196F3;border-radius:3px;font-size:10px;font-family:inherit;text-align:'+(isNum?"right":"left")+';box-sizing:border-box">';
+      return '<input id="gp_'+esc(uid)+'_'+field+'" '+(extraAttr||"")+' type="'+(isNum?"number":"text")+'" value="'+(isNum?(v||""):esc(String(v)))+'" style="width:100%;padding:2px 4px;border:1.5px solid #2196F3;border-radius:3px;font-size:10px;font-family:inherit;text-align:'+(isNum?"right":"left")+';box-sizing:border-box">';
     }
 
     h+='<tr style="border-bottom:1px solid #f8f8f8;background:'+rowBg+'">';
-    h+='<td style="padding:4px 6px;font-size:9px">'+esc(e.campus||"")+'</td>';
-    h+='<td style="padding:4px 6px;font-weight:700">'+esc(String(e.name).split("(")[0].trim())+(isLeave?' <span style="font-size:8px;color:#E65100">🌙</span>':"")+'</td>';
+    h+='<td style="padding:4px 6px;font-size:9px;position:sticky;left:0;background:'+stickyBg+';z-index:2">'+esc(e.campus||"")+'</td>';
+    h+='<td style="padding:4px 6px;font-weight:700;position:sticky;left:'+cols[0][2]+'px;background:'+stickyBg+';z-index:2;box-shadow:2px 0 4px -2px rgba(0,0,0,0.08)">'+esc(String(e.name).split("(")[0].trim())+(isLeave?' <span style="font-size:8px;color:#E65100">🌙</span>':"")+'</td>';
     h+='<td style="padding:4px 6px;font-weight:700;color:'+gc.tx+';font-size:9px">'+esc(e.grade||"")+'</td>';
     h+='<td style="padding:4px 6px;color:#666;font-size:9px">'+esc(firstJoin||"-")+'</td>';
     h+='<td style="padding:4px 6px;color:#00796B;font-size:9px">'+tenStr+'</td>';
     h+='<td style="padding:4px 6px;color:#666;font-size:9px">'+esc(e.joinDate||"-")+'</td>';
     // 편집 가능 숫자 4개
-    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:700">'+(isEditing?inp("monthlyBasePay",merged.monthlyBasePay,true):fmtN(merged.monthlyBasePay))+'</td>';
-    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("extraAllow",merged.extraAllow,true):fmtN(merged.extraAllow))+'</td>';
-    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("houseAllow",merged.houseAllow,true):fmtN(merged.houseAllow))+'</td>';
-    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:800;color:#1a3a5c">'+(isEditing?inp("totalPay",merged.totalPay,true):fmtN(merged.totalPay))+'</td>';
+    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:700">'+(isEditing?inp("monthlyBasePay",merged.monthlyBasePay,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"'):fmtN(merged.monthlyBasePay))+'</td>';
+    // 기타수당(고정) — 편집 시 [금액칸+내역칸], 표시 시 금액에 커서 올리면 내역 툴팁
+    var feNote=merged.extraNote||"";
+    var feCell;
+    if(isEditing){
+      // 표 전체 white-space:nowrap 때문에 좌우로 펼쳐지지 않도록 wrapper로 감싸고 내역칸은 display:block 으로 아래에 쌓음
+      feCell='<div style="white-space:normal;min-width:84px">'
+        +inp("fixedExtra",merged.extraAllow,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"')
+        +'<input id="gp_'+esc(uid)+'_fixedExtraNote" type="text" value="'+esc(feNote)+'" placeholder="무슨 수당?(예:직책수당)" title="이 고정수당이 무슨 수당인지 적으세요" style="display:block;width:100%;margin-top:3px;padding:3px 4px;border:1.5px solid #F9A825;border-radius:3px;font-size:10px;font-family:inherit;background:#FFFDE7;box-sizing:border-box">'
+        +'</div>';
+    }else if(merged.extraAllow){
+      feCell='<span title="'+esc(feNote||"수당 내역 미입력 — [✎ 편집]에서 입력")+'" style="'+(feNote?"border-bottom:1px dotted #999;cursor:help":"")+'">'+fmtN(merged.extraAllow)+'</span>';
+    }else{
+      feCell=fmtN(merged.extraAllow);
+    }
+    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+feCell+'</td>';
+    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("houseAllow",merged.houseAllow,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"'):fmtN(merged.houseAllow))+'</td>';
+    // 급여합계 = 기본월급여+기타수당(고정)+주택보조금 자동계산. 편집 시 입력칸 없이 실시간 갱신 표시
+    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:800;color:#1a3a5c">'+(isEditing?('<span id="gp_'+esc(uid)+'_totalPayDisp" title="기본월급여+기타수당(고정)+주택보조금 자동 합산">'+fmtN(merged.totalPay)+'</span>'):fmtN(merged.totalPay))+'</td>';
     // 이전 지급합계 — B+ 방식: 자동(정확)/자동(추정)/수기/필요 4상태
     var prevSrc=prev?prev.source:"need";
     var isExact=prev&&prev.exactDate;
     var prevBg="";
     var prevColor="#9E9E9E";
-    if(prevSrc==="manual"){prevBg="background:#FFFDE7;";prevColor="#5D4037";}
-    else if(prevSrc==="auto"&&!isExact){prevBg="background:#FFF3E0;";prevColor="#E65100";}// 추정
+    // 수기(manual)는 자동(정확)과 똑같이 표시 — 별도 배경·색·배지·굵기 없음
+    if(prevSrc==="auto"&&!isExact){prevBg="background:#FFF3E0;";prevColor="#E65100";}// 추정
     else if(prevSrc==="need"){prevBg="background:#FFEBEE;";prevColor="#C62828";}
+    // 이전 급여합계(금액) 칸은 작년 빨강 적용 안 함 — 변동급여일(날짜) 칸만 강조
+    var prevAmtBg=prevBg,prevAmtColor=prevColor;
+    if(prevOldYear){prevBg="background:#FCE4EC;";prevColor="#D32F2F";}// 작년 이전 변동급여일 — 날짜 칸만 약한 빨강
     var prevBadge="";
-    if(prevSrc==="manual")prevBadge=' <span style="background:#FFE082;color:#5D4037;font-size:7px;padding:0 3px;border-radius:2px;font-weight:700">수기</span>';
-    else if(prevSrc==="auto"&&!isExact)prevBadge=' <span style="background:#FFCC80;color:#5D2D00;font-size:7px;padding:0 3px;border-radius:2px;font-weight:700">추정</span>';
+    if(prevSrc==="auto"&&!isExact)prevBadge=' <span style="background:#FFCC80;color:#5D2D00;font-size:7px;padding:0 3px;border-radius:2px;font-weight:700">추정</span>';
     // 추정·필요 상태는 셀 클릭으로 바로 편집 진입
     var prevNeedsAttention=(prevSrc==="need")||(prevSrc==="auto"&&!isExact);
     var prevClickAttr=(!isEditing&&prevNeedsAttention)?' onclick="startGradePayEdit(\''+esc(uid)+'\')" title="클릭해서 정확한 날짜·금액 입력" style="cursor:pointer;':' style="';
     if(isEditing){
       // 편집 중: prevTotalPayDate (정확한 날짜) + prevTotalPay (금액)
-      h+='<td style="padding:2px 3px;text-align:right;'+prevBg+'">'+inp("prevTotalPayDate",(prev&&isExact)?prev.date:"",false)+'</td>';
+      h+='<td style="padding:2px 3px;text-align:right;'+prevBg+'">'+inp("prevTotalPayDate",(prev&&prev.source==="manual")?prev.date:"",false)+'</td>';
       h+='<td style="padding:2px 3px;text-align:right;'+prevBg+'">'+inp("prevTotalPay",prev?prev.amount:0,true)+'</td>';
+    }else if(prev&&(prevIsJoin||prev.none)){
+      // 변동급여일==최초입사일(실제 인상 아님) 또는 "-"(변동 없음 명시) → 둘 다 "-"
+      h+='<td style="padding:4px 6px;color:#bbb;font-size:9px;text-align:right">-</td>';
+      h+='<td style="padding:4px 6px;color:#bbb;font-size:9px;text-align:right">-</td>';
     }else if(prev){
       var hoverStyle=prevNeedsAttention?'" onmouseover="this.style.filter=\'brightness(0.95)\'" onmouseout="this.style.filter=\'\'':'';
       h+='<td'+prevClickAttr+'padding:4px 6px;color:'+prevColor+';font-size:9px;text-align:right;font-weight:'+(prevSrc==="manual"||(prevSrc==="auto"&&isExact)?"600":"400")+';'+prevBg+hoverStyle+'">'+esc(prev.date||"-")+prevBadge+'</td>';
-      h+='<td'+prevClickAttr+'padding:4px 6px;color:'+prevColor+';font-size:9px;text-align:right;font-weight:'+(prevSrc==="manual"?"700":"400")+';'+prevBg+hoverStyle+'">'+fmtN(prev.amount)+'</td>';
+      h+='<td'+prevClickAttr+'padding:4px 6px;color:'+prevAmtColor+';font-size:9px;text-align:right;font-weight:400;'+prevAmtBg+hoverStyle+'">'+fmtN(prev.amount)+'</td>';
     }else{
       // 수기 입력 필요 — 클릭하면 편집 모드 진입
       h+='<td colspan="2" onclick="startGradePayEdit(\''+esc(uid)+'\')" title="클릭해서 정확한 날짜·금액 입력" style="padding:4px 6px;color:#C62828;font-size:9px;text-align:center;font-weight:700;'+prevBg+';cursor:pointer" onmouseover="this.style.background=\'#FFCDD2\'" onmouseout="this.style.background=\'#FFEBEE\'">✏️ 클릭해서 수기 입력</td>';
@@ -4314,30 +4883,58 @@ function renderGradePayTab(emps,selCp,cc){
     var raiseColor=raiseAmt>0?"#1565C0":(raiseAmt<0?"#C62828":"#aaa");
     h+='<td style="padding:4px 6px;font-size:9px;text-align:right;color:'+raiseColor+';font-weight:'+(raiseAmt?"700":"400")+'">'+(raiseAmt!==null?(raiseAmt>0?"+":"")+fmtN(raiseAmt):"-")+'</td>';
     h+='<td style="padding:4px 6px;font-size:9px;text-align:right;color:'+raiseColor+';font-weight:'+(raisePct?"700":"400")+'">'+(raisePct!==null?(raisePct>0?"+":"")+raisePct+"%":"-")+'</td>';
-    // 인센티브 (편집 가능, 캐리오버 시각 구분)
-    var incBadge=(!isEditing&&merged._incSrc==="carryover"&&merged.incentive>0)?' <span style="background:#E8EAF6;color:#3F51B5;font-size:7px;padding:0 3px;border-radius:2px">유지</span>':"";
+    // 인센티브 — 이번 달 raw가 아닌 '유지(이어받기·수기보정)' 값이면 "유지" 배지. 수기 override도 동일하게 표시
+    var incBadge=(!isEditing&&(merged._incSrc==="carryover"||merged._incSrc==="override")&&merged.incentive>0)?' <span style="background:#E8EAF6;color:#3F51B5;font-size:7px;padding:0 3px;border-radius:2px">유지</span>':"";
     h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("incentive",merged.incentive,true):(fmtN(merged.incentive)+incBadge))+'</td>';
-    // 비고 (편집 가능, 직원별 고정)
+    // 비고 ① (금액 + 무슨 금액인지) — 고정수당처럼 다음달로 이어받기, 급여합계엔 미포함. 금액에 커서 올리면 내역 툴팁
+    var beNote=merged.bigoExtraNote||"";
+    var beCell;
+    if(isEditing){
+      beCell='<div style="white-space:normal;min-width:84px">'
+        +inp("bigoExtra",merged.bigoExtra,true)
+        +'<input id="gp_'+esc(uid)+'_bigoExtraNote" type="text" value="'+esc(beNote)+'" placeholder="무슨 금액?(예:명절상여)" title="이 비고 금액이 무슨 금액인지 적으세요" style="display:block;width:100%;margin-top:3px;padding:3px 4px;border:1.5px solid #F9A825;border-radius:3px;font-size:10px;font-family:inherit;background:#FFFDE7;box-sizing:border-box">'
+        +'</div>';
+    }else if(merged.bigoExtra){
+      beCell='<span title="'+esc(beNote||"내역 미입력 — [✎ 편집]에서 입력")+'" style="'+(beNote?"border-bottom:1px dotted #999;cursor:help":"")+'">'+fmtN(merged.bigoExtra)+'</span>';
+    }else{
+      beCell="";
+    }
+    h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+beCell+'</td>';
+    // 비고 ② (자유 텍스트, 직원별 고정)
     h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+'">'+(isEditing?inp("remark",e.remark||"",false):'<span style="color:#666;font-size:9px">'+esc(e.remark||"-")+'</span>')+'</td>';
     h+='<td style="padding:4px 6px;font-size:9px">'+esc(e.nationality||"-")+'</td>';
     // 동작
     if(isEditing){
-      h+='<td style="padding:4px 6px;text-align:center;white-space:nowrap">';
+      h+='<td style="padding:4px 6px;text-align:center;white-space:nowrap;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
       h+='<button onclick="saveGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 8px;background:#2E7D32;color:#fff;border:none;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;margin-right:3px;font-family:inherit">저장</button>';
       h+='<button onclick="cancelGradePayEdit()" style="padding:3px 8px;background:#fff;color:#666;border:1px solid #ccc;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit">취소</button>';
       h+='</td>';
     }else{
-      h+='<td style="padding:3px 6px;text-align:center">';
+      h+='<td style="padding:3px 6px;text-align:center;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
       h+='<button onclick="startGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 10px;background:#fff;color:#1565C0;border:1px solid #1565C0;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" onmouseover="this.style.background=\'#E3F2FD\'" onmouseout="this.style.background=\'#fff\'">✎ 편집</button>';
       h+='</td>';
     }
     h+='</tr>';
   }
 
-  activeEmps.forEach(function(e){gpRow(e,false);});
+  // 직책 그룹 카운트 (전체 필터일 때만 사용)
+  var gradeCntMap={};
+  if(selGrade==="전체"){activeEmps.forEach(function(e){var g=e.grade||"기타";gradeCntMap[g]=(gradeCntMap[g]||0)+1;});}
+  var lastGrade=null,groupIdx=0;
+  activeEmps.forEach(function(e){
+    if(selGrade==="전체"&&e.grade!==lastGrade){
+      var gc=GRADE_C[e.grade]||{tx:"#666"};
+      var gName=e.grade||"기타";
+      h+='<tr><td colspan="'+(cols.length+1)+'" style="padding:5px 10px;background:'+gc.tx+'15;color:'+gc.tx+';font-weight:800;font-size:10.5px;border-top:2px solid '+gc.tx+';letter-spacing:-.2px">'+esc(gName)+' <span style="font-weight:400;opacity:.7;font-size:9.5px">('+gradeCntMap[gName]+'명)</span></td></tr>';
+      lastGrade=e.grade;
+      groupIdx=0;
+    }
+    gpRow(e,false,groupIdx);
+    groupIdx++;
+  });
   if(leaveEmps.length){
-    h+='<tr style="background:#FFF3E0"><td colspan="'+(cols.length+1)+'" style="padding:7px 10px;color:#E65100;font-size:10px;font-weight:700;border-top:2px solid #F57F17">🌙 휴직 / 단축근무 ('+leaveEmps.length+'명) — 캠퍼스·이름순</td></tr>';
-    leaveEmps.forEach(function(e){gpRow(e,true);});
+    h+='<tr style="background:#FFF3E0"><td colspan="'+(cols.length+1)+'" style="padding:7px 10px;color:#E65100;font-size:10px;font-weight:700;border-top:2px solid #F57F17">🌙 휴직(육아휴직·출산전후휴가) ('+leaveEmps.length+'명) — 캠퍼스·이름순</td></tr>';
+    leaveEmps.forEach(function(e,i){gpRow(e,true,i);});
   }
   if(!activeEmps.length&&!leaveEmps.length){
     h+='<tr><td colspan="'+(cols.length+1)+'" style="padding:18px;text-align:center;color:#aaa">해당 직책의 직원이 없습니다.</td></tr>';
@@ -4347,6 +4944,151 @@ function renderGradePayTab(emps,selCp,cc){
   return h;
 }
 
+// 급여(직책별) 컬럼 정의 — 전체 렌더와 단일행 갱신이 공유(최상위 1개 소스)
+var GP_COLS=[
+  ["캠퍼스","left",46],["이름","left",56],["직책","left",60],
+  ["최초입사일","left",70],["근속","left",78],["캠퍼스 입사일","left",70],
+  ["기본월급여","right",70],["기타수당(고정)","right",70],["주택보조금","right",64],
+  ["급여합계","right",76],["변동급여일","right",70],["이전 급여합계","right",70],
+  ["인상금액","right",64],["인상률","right",46],["인센티브(PS)","right",68],
+  ["비고","right",95],["비고","left",150],["국적","left",42]
+];
+// 급여(직책별) 한 행 HTML 생성 — 전체 렌더와 단일행 갱신이 공유(모양 어긋남 방지)
+function gpRowHTML(e,isLeave,idx,editingUid,cols){
+  var h="";
+  var uid=e._uid||generateUid(e);
+  var isEditing=editingUid===uid;
+  var rr=findRawForEmp(e,D().rawRecords);
+  var firstJoin=getEmpFirstJoinDate(e.name,(rr&&rr.firstJoin)||e.joinDate,uid);
+  var tenStr=fmtTenureYMD(firstJoin);
+  var merged=e._mergedCache||getGradePayMerged(e);
+  var prev=e._prevCache!==undefined?e._prevCache:getPrevTotalPay(e,merged.totalPay);
+  var raiseAmt=(prev&&prev.amount)?merged.totalPay-prev.amount:null;
+  var raisePct=(prev&&prev.amount)?Math.round((merged.totalPay-prev.amount)/prev.amount*1000)/10:null;
+  // 변동급여일==최초입사일(연·월)이면 '-' 처리 — 자동 감지(auto)만 해당. 수기·메모 등 명시 출처는 항상 표시.
+  var prevIsJoin=prev&&prev.source==="auto"&&_ymKey(firstJoin)&&_ymKey(prev.date)===_ymKey(firstJoin);
+  if(prevIsJoin){raiseAmt=null;raisePct=null;}
+  var _curYear=parseInt((String(curMonth).match(/(\d{4})/)||[])[1])||0;
+  var _prevYear=prev?(parseInt((String(prev.date).match(/(\d{4})/)||[])[1])||0):0;
+  var prevOldYear=prev&&!prevIsJoin&&_prevYear&&_curYear&&_prevYear<_curYear;
+  var gc=GRADE_C[e.grade]||{tx:"#666"};
+  var rowBg=isEditing?"#FFF8E1":(isLeave?"#FAFAFA":(idx%2?"#f0f0f0":""));
+  var stickyBg=rowBg||"#fff";
+  function inp(field,val,isNum,extraAttr){
+    var v=isNum?(val||0):(val||"");
+    return '<input id="gp_'+esc(uid)+'_'+field+'" '+(extraAttr||"")+' type="'+(isNum?"number":"text")+'" value="'+(isNum?(v||""):esc(String(v)))+'" style="width:100%;padding:2px 4px;border:1.5px solid #2196F3;border-radius:3px;font-size:10px;font-family:inherit;text-align:'+(isNum?"right":"left")+';box-sizing:border-box">';
+  }
+  h+='<tr id="gprow_'+esc(uid)+'" data-isleave="'+(isLeave?"1":"0")+'" data-idx="'+idx+'" style="border-bottom:1px solid #f8f8f8;background:'+rowBg+'">';
+  h+='<td style="padding:4px 6px;font-size:9px;position:sticky;left:0;background:'+stickyBg+';z-index:2">'+esc(e.campus||"")+'</td>';
+  var _nameDisp=esc(String(e.name).split("(")[0].trim());
+  if(isLeave)_nameDisp='<span title="'+esc(getLeaveTypeLabel(e))+'" style="border-bottom:1px dotted #E65100;cursor:help">'+_nameDisp+'</span>';
+  h+='<td style="padding:4px 6px;font-weight:700;position:sticky;left:'+cols[0][2]+'px;background:'+stickyBg+';z-index:2;box-shadow:2px 0 4px -2px rgba(0,0,0,0.08)">'+_nameDisp+(isLeave?' <span style="font-size:8px;color:#E65100">🌙</span>':"")+'</td>';
+  h+='<td style="padding:4px 6px;font-weight:700;color:'+gc.tx+';font-size:9px">'+esc(e.grade||"")+'</td>';
+  h+='<td style="padding:4px 6px;color:#666;font-size:9px">'+esc(firstJoin||"-")+'</td>';
+  h+='<td style="padding:4px 6px;color:#00796B;font-size:9px">'+tenStr+'</td>';
+  h+='<td style="padding:4px 6px;color:#666;font-size:9px">'+esc(e.joinDate||"-")+'</td>';
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:700">'+(isEditing?inp("monthlyBasePay",merged.monthlyBasePay,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"'):fmtN(merged.monthlyBasePay))+'</td>';
+  var feNote=merged.extraNote||"";
+  var feCell;
+  if(isEditing){
+    feCell='<div style="white-space:normal;min-width:84px">'
+      +inp("fixedExtra",merged.extraAllow,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"')
+      +'<input id="gp_'+esc(uid)+'_fixedExtraNote" type="text" value="'+esc(feNote)+'" placeholder="무슨 수당?(예:직책수당)" title="이 고정수당이 무슨 수당인지 적으세요" style="display:block;width:100%;margin-top:3px;padding:3px 4px;border:1.5px solid #F9A825;border-radius:3px;font-size:10px;font-family:inherit;background:#FFFDE7;box-sizing:border-box">'
+      +'</div>';
+  }else if(merged.extraAllow){
+    feCell='<span title="'+esc(feNote||"수당 내역 미입력 — [✎ 편집]에서 입력")+'" style="'+(feNote?"border-bottom:1px dotted #999;cursor:help":"")+'">'+fmtN(merged.extraAllow)+'</span>';
+  }else{
+    feCell=fmtN(merged.extraAllow);
+  }
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+feCell+'</td>';
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("houseAllow",merged.houseAllow,true,'oninput="gpRecalcTotal(\''+esc(uid)+'\')"'):fmtN(merged.houseAllow))+'</td>';
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right;font-weight:800;color:#1a3a5c">'+(isEditing?('<span id="gp_'+esc(uid)+'_totalPayDisp" title="기본월급여+기타수당(고정)+주택보조금 자동 합산">'+fmtN(merged.totalPay)+'</span>'):fmtN(merged.totalPay))+'</td>';
+  var prevSrc=prev?prev.source:"need";
+  var isExact=prev&&prev.exactDate;
+  var prevBg="";
+  var prevColor="#9E9E9E";
+  if(prevSrc==="auto"&&!isExact){prevBg="background:#FFF3E0;";prevColor="#E65100";}
+  else if(prevSrc==="need"){prevBg="background:#FFEBEE;";prevColor="#C62828";}
+  var prevAmtBg=prevBg,prevAmtColor=prevColor;
+  if(prevOldYear){prevBg="background:#FCE4EC;";prevColor="#D32F2F";}
+  var prevBadge="";
+  if(prevSrc==="auto"&&!isExact)prevBadge=' <span style="background:#FFCC80;color:#5D2D00;font-size:7px;padding:0 3px;border-radius:2px;font-weight:700">추정</span>';
+  var prevNeedsAttention=(prevSrc==="need")||(prevSrc==="auto"&&!isExact);
+  var prevClickAttr=(!isEditing&&prevNeedsAttention)?' onclick="startGradePayEdit(\''+esc(uid)+'\')" title="클릭해서 정확한 날짜·금액 입력" style="cursor:pointer;':' style="';
+  if(isEditing){
+    h+='<td style="padding:2px 3px;text-align:right;'+prevBg+'">'+inp("prevTotalPayDate",(prev&&prev.source==="manual")?prev.date:"",false)+'</td>';
+    h+='<td style="padding:2px 3px;text-align:right;'+prevBg+'">'+inp("prevTotalPay",prev?prev.amount:0,true)+'</td>';
+  }else if(prev&&(prevIsJoin||prev.none)){
+    h+='<td style="padding:4px 6px;color:#bbb;font-size:9px;text-align:right">-</td>';
+    h+='<td style="padding:4px 6px;color:#bbb;font-size:9px;text-align:right">-</td>';
+  }else if(prev){
+    var hoverStyle=prevNeedsAttention?'" onmouseover="this.style.filter=\'brightness(0.95)\'" onmouseout="this.style.filter=\'\'':'';
+    h+='<td'+prevClickAttr+'padding:4px 6px;color:'+prevColor+';font-size:9px;text-align:right;font-weight:'+(prevSrc==="manual"||isExact?"600":"400")+';'+prevBg+hoverStyle+'">'+esc(prev.date||"-")+prevBadge+'</td>';
+    h+='<td'+prevClickAttr+'padding:4px 6px;color:'+prevAmtColor+';font-size:9px;text-align:right;font-weight:400;'+prevAmtBg+hoverStyle+'">'+fmtN(prev.amount)+'</td>';
+  }else{
+    h+='<td colspan="2" onclick="startGradePayEdit(\''+esc(uid)+'\')" title="클릭해서 정확한 날짜·금액 입력" style="padding:4px 6px;color:#C62828;font-size:9px;text-align:center;font-weight:700;'+prevBg+';cursor:pointer" onmouseover="this.style.background=\'#FFCDD2\'" onmouseout="this.style.background=\'#FFEBEE\'">✏️ 클릭해서 수기 입력</td>';
+  }
+  var raiseColor=raiseAmt>0?"#1565C0":(raiseAmt<0?"#C62828":"#aaa");
+  h+='<td style="padding:4px 6px;font-size:9px;text-align:right;color:'+raiseColor+';font-weight:'+(raiseAmt?"700":"400")+'">'+(raiseAmt!==null?(raiseAmt>0?"+":"")+fmtN(raiseAmt):"-")+'</td>';
+  h+='<td style="padding:4px 6px;font-size:9px;text-align:right;color:'+raiseColor+';font-weight:'+(raisePct?"700":"400")+'">'+(raisePct!==null?(raisePct>0?"+":"")+raisePct+"%":"-")+'</td>';
+  var incBadge=(!isEditing&&(merged._incSrc==="carryover"||merged._incSrc==="override")&&merged.incentive>0)?' <span style="background:#E8EAF6;color:#3F51B5;font-size:7px;padding:0 3px;border-radius:2px">유지</span>':"";
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+(isEditing?inp("incentive",merged.incentive,true):(fmtN(merged.incentive)+incBadge))+'</td>';
+  var beNote=merged.bigoExtraNote||"";
+  var beCell;
+  if(isEditing){
+    beCell='<div style="white-space:normal;min-width:84px">'
+      +inp("bigoExtra",merged.bigoExtra,true)
+      +'<input id="gp_'+esc(uid)+'_bigoExtraNote" type="text" value="'+esc(beNote)+'" placeholder="무슨 금액?(예:명절상여)" title="이 비고 금액이 무슨 금액인지 적으세요" style="display:block;width:100%;margin-top:3px;padding:3px 4px;border:1.5px solid #F9A825;border-radius:3px;font-size:10px;font-family:inherit;background:#FFFDE7;box-sizing:border-box">'
+      +'</div>';
+  }else if(merged.bigoExtra){
+    beCell='<span title="'+esc(beNote||"내역 미입력 — [✎ 편집]에서 입력")+'" style="'+(beNote?"border-bottom:1px dotted #999;cursor:help":"")+'">'+fmtN(merged.bigoExtra)+'</span>';
+  }else{
+    beCell="";
+  }
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+';text-align:right">'+beCell+'</td>';
+  h+='<td style="padding:'+(isEditing?"2px 3px":"4px 6px")+'">'+(isEditing?inp("remark",e.remark||"",false):'<span style="color:#666;font-size:9px">'+esc(e.remark||"-")+'</span>')+'</td>';
+  h+='<td style="padding:4px 6px;font-size:9px">'+esc(e.nationality||"-")+'</td>';
+  if(isEditing){
+    h+='<td style="padding:4px 6px;text-align:center;white-space:nowrap;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
+    h+='<button onclick="saveGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 8px;background:#2E7D32;color:#fff;border:none;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;margin-right:3px;font-family:inherit">저장</button>';
+    h+='<button onclick="cancelGradePayEdit()" style="padding:3px 8px;background:#fff;color:#666;border:1px solid #ccc;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit">취소</button>';
+    h+='</td>';
+  }else{
+    h+='<td style="padding:3px 6px;text-align:center;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
+    h+='<button onclick="startGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 10px;background:#fff;color:#1565C0;border:1px solid #1565C0;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" onmouseover="this.style.background=\'#E3F2FD\'" onmouseout="this.style.background=\'#fff\'">✎ 편집</button>';
+    h+='</td>';
+  }
+  h+='</tr>';
+  return h;
+}
+// 한 행만 다시 그리기(전체 render 회피) — 편집 진입/취소 시 사용. 못 찾으면 안전하게 전체 render.
+function updateGpRow(uid){
+  var tr=document.getElementById("gprow_"+uid);
+  if(!tr||typeof GP_COLS==="undefined"){render();return;}
+  var e=getAllEmployees().find(function(x){return (x._uid||generateUid(x))===uid;});
+  if(!e){render();return;}
+  var isLeave=tr.getAttribute("data-isleave")==="1";
+  var idx=parseInt(tr.getAttribute("data-idx"),10)||0;
+  tr.outerHTML=gpRowHTML(e,isLeave,idx,state.gradePayEditingUid,GP_COLS);
+}
+
+function exportDraftOverviewCSV(){
+  var selCp=state.overviewCampus||"전체";
+  var io=(D().inoutRecords||[]).filter(function(r){return r.type==="입사"||r.type==="퇴사"||r.type==="인상"||r.type==="수당";});
+  var al=(D().rawRecords||[]).filter(function(r){return String(r.empId||"").indexOf("수당")>=0;});
+  var ma=(D().maternityRecords||[]);
+  function fcp(arr){return selCp==="전체"?arr:arr.filter(function(r){return(r.campus||"")===selCp;});}
+  io=fcp(io);al=fcp(al);ma=fcp(ma);
+  var rows=[["구분","이름","캠퍼스","직책","고용형태","날짜","기안서번호","비고"]];
+  ma.forEach(function(r){rows.push(["휴가휴직",r.name,r.campus||"",r.grade||"",r.gubn||"",r.startDate||"",r.draftNo||"",r.remark||""]);});
+  io.filter(function(r){return r.type==="퇴사";}).forEach(function(r){rows.push(["퇴사",r.name,r.campus||"",r.grade||"",r.gubn||"",r.date||"","-",r.remark||r.memo||""]);});
+  io.filter(function(r){return r.type==="입사";}).forEach(function(r){rows.push(["입사",r.name,r.campus||"",r.grade||"",r.gubn||"",r.date||"",r.draftNo||"",r.remark||r.memo||""]);});
+  io.filter(function(r){return r.type==="인상";}).forEach(function(r){rows.push(["인상",r.name,r.campus||"",r.grade||"",r.gubn||"",r.date||"",r.draftNo||"",r.remark||r.memo||""]);});
+  al.forEach(function(r){rows.push(["수당",r.name||"",r.campus||"",r.grade||"",r.gubn||"",(r._uploadedAt||"").slice(0,10),r.draftNo||"",r.remark||""]);});
+  if(rows.length<=1){notify("데이터 없음","warn");return;}
+  var csv=rows.map(function(r){return r.map(function(c){return'"'+String(c||"").replace(/"/g,'""')+'"';}).join(",");}).join("\n");
+  var blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=curMonth+"_기안서.csv";a.click();URL.revokeObjectURL(url);
+}
 // ===== ⑪ 기안서 점검 (분석탭 내 서브탭) =====
 function renderDraftInOverview(selCp){
   var inoutRecs=(D().inoutRecords||[]).filter(function(r){return r.type==="입사"||r.type==="퇴사"||r.type==="인상"||r.type==="수당";});
@@ -4392,15 +5134,18 @@ function renderDraftInOverview(selCp){
   var nonRegItems=itemsSplit.nonReg;
 
   var catC={"휴가휴직":"#9C27B0","퇴사":"#C62828","입사":"#2E7D32","인상":"#1565C0","수당":"#F57F17"};
-  function isDone(a){return a.cat==="퇴사"?false:(a.draftNo&&a.draftNo.trim()&&a.draftNo!=="-");}
+  // 퇴사·휴가휴직은 기안서 작성 대상 아님 → 작성여부/완료율에서 면제
+  function isExemptCat(c){return c==="퇴사"||c==="휴가휴직";}
+  function isDone(a){return isExemptCat(a.cat)?false:(a.draftNo&&a.draftNo.trim()&&a.draftNo!=="-");}
 
   // 전체 통계 (KPI는 정규직 기준)
-  var allNeed=allItems.filter(function(a){return a.cat!=="퇴사";});
+  var allNeed=allItems.filter(function(a){return !isExemptCat(a.cat);});
   var allDone=allNeed.filter(function(a){return isDone(a);}).length;
   var allTodo=allNeed.length-allDone;
   var allRate=allNeed.length?Math.round(allDone/allNeed.length*100):0;
 
   var h='';
+  h+='<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button onclick="exportDraftOverviewCSV()" style="padding:5px 12px;border:1px solid #ddd;border-radius:7px;background:#fff;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit">⬇ CSV</button></div>';
 
   // KPI 상단 (정규직 기준 + 비정규직 카운트 별도)
   h+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">';
@@ -4437,7 +5182,7 @@ function renderDraftInOverview(selCp){
     var cpMat=matRecs.filter(function(r){return r.campus===cp;});
     var cpItemsBoth=buildItems(cpInout,cpAllow,cpMat);
     var cpItems=splitByGubn(cpItemsBoth).reg;// 정규직만
-    var cpNeed=cpItems.filter(function(a){return a.cat!=="퇴사";});
+    var cpNeed=cpItems.filter(function(a){return !isExemptCat(a.cat);});
     var cpDone=cpNeed.filter(function(a){return isDone(a);}).length;
     var cpRate=cpNeed.length?Math.round(cpDone/cpNeed.length*100):0;
     var cc2=CAMPUS_C[cp]||{hd:"#555"};
@@ -4484,7 +5229,7 @@ function renderDraftInOverview(selCp){
       });
       h+='</tr></thead><tbody>';
       items.forEach(function(a,i){
-        var isRetire=a.cat==="퇴사";
+        var isRetire=isExemptCat(a.cat);// 퇴사·휴가휴직 = 작성여부 면제
         var done2=!isRetire&&!!(a.draftNo&&a.draftNo.trim());
         var c2=catC[a.cat]||"#888";
         var detailColor="#666",detailWeight=500;
@@ -5267,10 +6012,15 @@ function parsePayHistoryExcel(file){
           var mt=addr.match(/^B(\d+)$/);
           if(!mt)return;
           var rIdx=parseInt(mt[1])-1;
-          var firstComment=cell.c[0];
+          // 셀 코멘트가 여러 조각/스레드(cell.c[0],[1],…)면 모두 합침 — 첫 조각만 읽으면 둘째 줄(다른 날짜 등) 유실
+          var _seen={},_parts=[];
+          cell.c.forEach(function(_cm){
+            var _t=String((_cm&&_cm.t)||"").trim();
+            if(_t&&!_seen[_t]){_seen[_t]=1;_parts.push(_t);}
+          });
           commentsMap[rIdx]={
-            text:String(firstComment.t||"").trim(),
-            author:String(firstComment.a||"").trim()
+            text:_parts.join("\n"),
+            author:String((cell.c[0]&&cell.c[0].a)||"").trim()
           };
         });
         console.log("[메모업로드] 코멘트 추출:",allCommentCount,"전체 / B컬럼만:",Object.keys(commentsMap).length);
@@ -5312,14 +6062,31 @@ function parsePayHistoryExcel(file){
 // 엑셀 행 → 시스템 UID 매칭
 // generateUid()와 동일한 규칙 (주민번호 6자리 + 최초입사일 YYYYMMDD)
 function _mkUidFromRow(row){
-  var rrn=row.resident.replace(/[^0-9]/g,"");
-  var fj=row.firstJoin.replace(/[^0-9]/g,"").slice(0,8);
-  var nameKey=String(row.name||"?").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"");
+  var rrn=String(row.resident||"").replace(/[^0-9]/g,"");
+  var fj=String(row.firstJoin||"").replace(/[^0-9]/g,"").slice(0,8);
+  var nameKey=String(row.name||"?").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"").replace(/[.#$\[\]\/]/g,"");
   // 신 UID 형식: [주민 7자리]_[firstJoin]_[이름] (generateUid 와 동일)
   if(rrn.length>=7&&fj.length===8)return rrn.slice(0,7)+"_"+fj+"_"+nameKey;
   // 폴백 1: 주민 6자리만
   if(rrn.length>=6&&fj.length===8)return rrn.slice(0,6)+"_"+fj+"_"+nameKey;
-  // 폴백 2: 주민번호 없음
+  // 폴백 2: 주민/입사일 부족(신규입사자 등) → 기존 raw에서 이름(+캠퍼스) 단일 매칭 → 그 raw의 uid 사용
+  //   동명이인(personKey 2명 이상)이면 매칭 안 함(안전). 신규입사자 메모 누락의 핵심 해결.
+  try{
+    var _raws=(typeof D==="function")?(D().rawRecords||[]):[];
+    var _cn=function(s){return String(s||"").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"");};
+    var _rn=_cn(row.name);
+    if(_rn&&_raws.length){
+      var _uniq={};
+      _raws.forEach(function(x){
+        if(!x._uid||_cn(x.name)!==_rn)return;
+        if(row.campus&&x.campus&&x.campus!==row.campus)return;
+        _uniq[personKeyFromUid(x._uid)]=x._uid;
+      });
+      var _ks=Object.keys(_uniq);
+      if(_ks.length===1)return _uniq[_ks[0]];
+    }
+  }catch(e){}
+  // 폴백 3: 주민번호 없음 → 이름_입사일
   if(fj.length===8)return nameKey+"_"+fj;
   return null;// 매칭 불가
 }
@@ -5566,7 +6333,8 @@ function parsePayHistoryNote(rawText){
     // 구분선 스킵
     if(line.indexOf("---")===0||line.indexOf("===")===0)return;
     // 번호+날짜 패턴
-    var m=line.match(/^(?:\d+\.?\s*)?(\d{2,4})[\.\/](\d{1,2})[\.\/](\d{1,2})\s*~?\s*(.*)$/);
+    // 줄 앞의 불릿·기호(*, ★, **, •, -, _ 등)와 번호(1. / 1)) 를 건너뛰고 날짜부터 파싱
+    var m=line.match(/^[\s*★☆•◦●○·_–—-]*(?:\d+[.)]?\s*)?(\d{2,4})[\.\/](\d{1,2})[\.\/](\d{1,2})\s*~?\s*(.*)$/);
     if(!m){freeLines.push(line);return;}
     var yr=parseInt(m[1]);if(yr<100)yr+=2000;
     var mo=parseInt(m[2]),da=parseInt(m[3]);
@@ -5647,8 +6415,15 @@ function autoRaiseDetailFor(rec){
   if(!period)return null;
   // pay 타입 + 금액 있는 entries만 (이전 값 비교용 전체 리스트)
   var allPays=parsed.entries.filter(function(e){return e.type==="pay"&&e.amount;});
-  // 현재 귀속 기간 내 변동
-  var inPeriod=allPays.filter(function(e){return e.date>=period.start&&e.date<=period.end;});
+  // 급여기간 시작(11일) 직전 빈틈(1일자·전월말 소급 인상 등)도 잡으려 탐색 시작을 한 달 앞당김
+  // 예) 5월 급여기간 05-11~06-10 → 탐색은 04-11~06-10 (05-01·04-24 인상도 포함, 작년 같은달은 제외)
+  var extStart=period.start.replace(/^(\d{4})-(\d{2})-/,function(_m,y,mo){var mm=parseInt(mo,10)-1,yy=parseInt(y,10);if(mm<1){mm=12;yy--;}return yy+"-"+("0"+mm).slice(-2)+"-";});
+  var inPeriod=allPays.filter(function(e){return e.date>=extStart&&e.date<=period.end;});
+  if(!inPeriod.length){
+    // 창 밖(11일 경계·소급으로 빠지는 1일자·전월말 인상)이어도 → 이번 달(period.end) 이전 가장 최근 변동 1건은 표시
+    var prior=allPays.filter(function(e){return e.date<=period.end;});
+    if(prior.length)inPeriod=[prior[prior.length-1]];
+  }
   if(!inPeriod.length)return null;
   var results=[];
   inPeriod.forEach(function(e){
@@ -5675,12 +6450,20 @@ function autoJoinDetailFor(rec){
     }
   }
   if(!matchingRaw)return null;
+  // 메모가 없거나(신규입사자) 급여항목이 없을 때 → raw의 입사 급여로 표시 ("26.06.01부 2,500,000")
+  function rawJoinFallback(){
+    var base=matchingRaw.monthlyBasePay||matchingRaw.basePay||0;
+    if(!base)return null;
+    var jd=String(matchingRaw.firstJoin||matchingRaw.joinDate||rec.date||"").match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    var ds=jd?(jd[1].slice(2)+"."+String(jd[2]).padStart(2,"0")+"."+String(jd[3]).padStart(2,"0")+"부 "):"";
+    return ds+fmtN(base);
+  }
   var noteMatch=findPayHistoryNoteForRaw(matchingRaw);
-  if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return null;
+  if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return rawJoinFallback();
   var parsed=parsePayHistoryNote(noteMatch.note.rawText);
   // 모든 pay 변동
   var allPays=parsed.entries.filter(function(e){return e.type==="pay"&&e.amount;});
-  if(!allPays.length)return null;
+  if(!allPays.length)return rawJoinFallback();
   // 우선 1: 현재 귀속월에 들어가는 entry (입사가 이번 달이라면)
   var period=getMonthPeriod(curMonth);
   if(period){
@@ -6208,11 +6991,12 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     if(isMat){
       var parsed=parseRawName(rec.name||"");
       var dates=parseMaternityDates(parsed.suffix||rec.name);
-      var catMatch=(parsed.suffix||rec.name).match(/(육단|육휴|출산|휴직)/);
-      var cat=catMatch?catMatch[1]:"휴직";
+      // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
+      var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
       var matName=parsed.name||rec.name;
-      var already2=target.maternityRecords.some(function(m){return m.name===matName;});
-      if(!already2){target.maternityRecords.push({name:matName,_uid:rec._uid,campus:rec.campus||"",grade:rec.grade||"",gubn:rec.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:rec.name,empId:empIdStr,_fromRaw:true,_uploadedAt:now});maternityCnt++;}
+      var _exIdx=-1;for(var _mi=0;_mi<target.maternityRecords.length;_mi++){if(target.maternityRecords[_mi].name===matName){_exIdx=_mi;break;}}
+      if(_exIdx<0){target.maternityRecords.push({name:matName,_uid:rec._uid,campus:rec.campus||"",grade:rec.grade||"",gubn:rec.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:rec.name,empId:empIdStr,_fromRaw:true,_uploadedAt:now});maternityCnt++;}
+      else{var _exM=target.maternityRecords[_exIdx];if((!_exM.category||_exM.category==="휴직")&&cat!=="휴직"){_exM.category=cat;if(!_exM.empId)_exM.empId=empIdStr;maternityCnt++;}}
     }
   });
   return{added:addedCnt,updated:updatedCnt,removed:removedCnt,inout:inoutCnt,maternity:maternityCnt};
@@ -6514,6 +7298,7 @@ function renderInout(){
   h+='<select onchange="state.inoutCampus=this.value;render()" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-weight:600;font-family:inherit;background:#fff;color:#26262b">';
   campuses.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===selCp?" selected":"")+'>'+esc(c)+'</option>';});
   h+='</select>';
+  h+='<input id="ioSearch" value="'+esc(state.inoutSearch||"")+'" oncompositionstart="this.dataset._composing=\'1\'" oncompositionend="this.dataset._composing=\'\';safeInputUpdate(this,function(v){state.inoutSearch=v;});" oninput="safeInputUpdate(this,function(v){state.inoutSearch=v;});" placeholder="🔍 이름 검색" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-family:inherit;width:120px;margin-left:8px">';
   h+='</div>';
   if(sub==="allowance")return h+renderAllowanceTab();
   var type=sub==="in"?"입사":sub==="out"?"퇴사":"인상";
@@ -6544,6 +7329,8 @@ function renderInoutByType(type){
   var selCp=state.inoutCampus||"전체";
   var allRecs=(D().inoutRecords||[]).filter(function(r){return r.type===type;});
   if(selCp!=="전체")allRecs=allRecs.filter(function(r){return r.campus===selCp;});
+  var ioq=(state.inoutSearch||"").trim().toLowerCase();
+  if(ioq)allRecs=allRecs.filter(function(r){return String(r.name||"").toLowerCase().indexOf(ioq)>=0;});
   var color=isOut?"#C62828":isRaise?"#1565C0":"#2E7D32";
   var icon=isOut?"📤":isRaise?"📈":"📥";
 
@@ -7019,10 +7806,32 @@ function getAdminCards(){return GLOBAL_ADMIN_CARDS;}
 function getRetiredManagers(){return GLOBAL_RETIRED_MANAGERS;}
 
 function renderHrCard(){
-  var retired=getRetiredManagers();
-  var retiredNameSet={};retired.forEach(function(r){retiredNameSet[r.name]=true;});
-  // 재직 관리자 = 전 기간 누적 관리자 중 퇴직 목록에 없는 사람 (curMonth 영향 없음)
-  var allEmps=getAllManagersAllTime().filter(function(e){return !retiredNameSet[e.name];});
+  // 자동 퇴직(구글시트 inoutRecords "퇴사" 기록) 수집 — 개인이력 탭과 동일 기준
+  rebuildRetiredEmployees();
+  var manualRetired=getRetiredManagers();
+  var manualNameSet={};manualRetired.forEach(function(r){manualNameSet[r.name]=true;});
+  // 전 기간 관리자 → 자동 퇴직(UID 매칭) / 수동 퇴직(이름 매칭) / 재직 분류
+  var allMgrs=getAllManagersAllTime();
+  var allEmps=[],autoRetired=[];
+  allMgrs.forEach(function(e){
+    var autoInfo=e._uid&&GLOBAL_RETIRED_EMPLOYEES[e._uid];
+    if(autoInfo){
+      // 시트에 퇴사 기록 있음 → 자동 퇴직. retiredAt/reason은 시트 값으로 채움
+      autoRetired.push(Object.assign({},e,{
+        retiredAt:autoInfo.leaveDate||"",
+        retireReason:autoInfo.reason||"",
+        _autoRetired:true
+      }));
+    }else if(manualNameSet[e.name]){
+      // 수동 퇴직 — manualRetired 배열에 정보 있음 (아래에서 합침)
+    }else{
+      allEmps.push(e);
+    }
+  });
+  // 수동 퇴직 중 자동과 이름 겹치지 않는 것만 추가 (자동이 우선)
+  var autoNameSet={};autoRetired.forEach(function(r){autoNameSet[r.name]=true;});
+  var manualOnly=manualRetired.filter(function(r){return !autoNameSet[r.name];});
+  var retired=autoRetired.concat(manualOnly);
   // 정렬 — 1순위 캠퍼스 정의 순서, 2순위 직책 순서
   var campusOrder=DD().campuses.map(function(c){return c.name;});
   function campusIdx(n){var i=campusOrder.indexOf(n||"");return i<0?999:i;}
@@ -7072,7 +7881,13 @@ function renderHrCard(){
     h+='<div style="display:flex;align-items:center;justify-content:space-between">';
     h+='<span style="font-size:12px;font-weight:700">'+esc(e.name.split("(")[0].trim())+'</span>';
     h+='<div style="display:flex;gap:3px;align-items:center">';
-    if(hrcTab==="retired")h+='<span onclick="event.stopPropagation();moveToActive(\''+esc(e.name)+'\')" title="재직 복귀" style="cursor:pointer;font-size:9px;padding:1px 5px;border-radius:4px;background:#f0fff0;color:#2e7d32;border:1px solid #a5d6a7">재직↑</span>';
+    if(hrcTab==="retired"){
+      if(e._autoRetired){
+        h+='<span title="구글시트 퇴사 기록 기반 자동 분류 — 시트의 퇴사 기록을 삭제해야 재직으로 돌아갑니다" style="font-size:9px;padding:1px 5px;border-radius:4px;background:#fff3e0;color:#e65100;border:1px solid #ffcc80">자동</span>';
+      }else{
+        h+='<span onclick="event.stopPropagation();moveToActive(\''+esc(e.name)+'\')" title="재직 복귀" style="cursor:pointer;font-size:9px;padding:1px 5px;border-radius:4px;background:#f0fff0;color:#2e7d32;border:1px solid #a5d6a7">재직↑</span>';
+      }
+    }
     h+='<span style="font-size:9px;padding:1px 5px;border-radius:4px;background:'+(hasCard?"#E8F5E9":"#f5f5f5")+';color:'+(hasCard?"#2E7D32":"#aaa")+'">'+(hasCard?"완료":"미작성")+'</span>';
     h+='</div></div>';
     h+='<div style="font-size:10px;color:'+cc2.hd+';font-weight:600;margin-top:2px">'+esc(e.campus||"")+' · <span style="color:'+gc2.tx+'">'+esc(e.grade||"")+'</span></div>';
@@ -7116,10 +7931,12 @@ function renderPersonalHistory(){
 
   var allTimelines=buildAllTimelines();
   var uids=Object.keys(allTimelines).filter(function(u){return allTimelines[u].length>0;});
+  var _mgAll=getDisplayMergeGroups();// 동일인 표시 통합 그룹 (UID 불변)
 
   // 재직/퇴직 분리 + 일용직 제외 (현재 gubn 기준)
   var retiredUids=[],activeUids=[];
   uids.forEach(function(u){
+    if(_mgAll.map[u]&&_mgAll.map[u]!==u)return;// 통합 그룹 비대표 UID → 대표 카드로 합쳐 표시
     var _tl=allTimelines[u]||[];
     if(_tl.length&&_tl[_tl.length-1].gubn==='일용직')return;
     if(GLOBAL_RETIRED_EMPLOYEES[u])retiredUids.push(u);
@@ -7146,7 +7963,13 @@ function renderPersonalHistory(){
   };
   var filtered=q?curUids.filter(function(u){
     var nm=(allTimelines[u][0].name||"").toLowerCase();
-    return nm.indexOf(q)>=0;
+    if(nm.indexOf(q)>=0)return true;
+    var nmLast=(allTimelines[u][allTimelines[u].length-1].name||"").toLowerCase();
+    if(nmLast.indexOf(q)>=0)return true;
+    // 통합 그룹 대표면 구성원의 옛 이름·영문명으로도 검색
+    var g=_mgAll.groups[u];
+    if(g)return g.uids.some(function(u2){return(allTimelines[u2]||[]).some(function(e){return String(e.name||"").toLowerCase().indexOf(q)>=0;});});
+    return false;
   }):curUids.slice();
   if(blOnly)filtered=filtered.filter(function(u){return isBlacklisted(u);});
   if(errOnly)filtered=filtered.filter(_isErrUid);
@@ -7154,6 +7977,8 @@ function renderPersonalHistory(){
   var blCount=curUids.filter(function(u){return isBlacklisted(u);}).length;
   var errCount=curUids.filter(_isErrUid).length;
   var sel=state.personalSelected;// UID
+  // 통합 그룹 구성원(비대표)을 선택한 경우 대표 UID로 전환
+  if(sel&&_mgAll.map[sel]&&_mgAll.map[sel]!==sel){sel=state.personalSelected=_mgAll.map[sel];}
 
   // 선택된 UID가 현재 탭에 없으면 해제
   if(sel&&curUids.indexOf(sel)<0){
@@ -7187,7 +8012,8 @@ function renderPersonalHistory(){
     h+='<div style="padding:30px 12px;text-align:center;color:#aaa;font-size:11px">'+(tab==="retired"?"퇴직자 없음":"재직자 없음")+'</div>';
   }
   filtered.slice(0,CONFIG.MAX_PERSONAL_LIST).forEach(function(uid){
-    var tl=allTimelines[uid]||[];
+    var _mgRow=_mgAll.groups[uid]?getMergedTimeline(uid):null;
+    var tl=_mgRow?_mgRow.tl:(allTimelines[uid]||[]);
     if(!tl.length)return;
     var latest=tl[tl.length-1];
     var first=tl[0];
@@ -7205,6 +8031,7 @@ function renderPersonalHistory(){
     if(isGhost)h+=' <span title="ghost UID — raw 매칭 실패, 수동 검토 필요" style="font-size:9px;color:#fff;background:#B71C1C;padding:1px 5px;border-radius:8px;font-weight:700">G</span>';
     else if(isOldUid)h+=' <span title="옛 UID 형식 — 정규화 필요" style="font-size:9px;color:#7c4f00;background:#FFE082;padding:1px 5px;border-radius:8px;font-weight:700">!</span>';
     if(isDup)h+=' <span title="동명이인 있음" style="font-size:9px;color:#E65100;background:#FFF3E0;padding:1px 5px;border-radius:8px;font-weight:700">⚠</span>';
+    if(_mgRow)h+=' <span title="표기변경으로 갈라진 기록 '+_mgRow.uids.length+'건 통합 표시 (원본·UID 불변)" style="font-size:9px;color:#1B5E20;background:#E8F5E9;padding:1px 5px;border-radius:8px;font-weight:700">🔗'+_mgRow.uids.length+'</span>';
     h+='</div>';
     var _uniqMo=(function(){var s={};tl.forEach(function(e){if(e&&e.month)s[e.month]=1;});return Object.keys(s).length;})();
     h+='<div style="font-size:9px;color:#888;margin-top:2px"><span style="color:'+cc2.hd+'">'+esc(latest.campus)+'</span> · '+esc(latest.grade||"-")+' · '+_uniqMo+'개월';
@@ -7226,7 +8053,10 @@ function renderPersonalHistory(){
 
 function renderPersonalDetail(uid){
   var all=buildAllTimelines();
-  var tl=all[uid]||[];
+  // 동일인 표시 통합: 같은 13자리+연속재직 그룹이면 대표 UID 기준으로 합쳐 표시 (UID/원본 불변)
+  var _mg=getMergedTimeline(uid);
+  if(_mg.merged&&_mg.primary!==uid){uid=_mg.primary;state.personalSelected=uid;}
+  var tl=_mg.merged?_mg.tl:(all[uid]||[]);
   if(!tl.length)return'<div style="padding:40px;text-align:center;color:#aaa">이력 없음</div>';
   var latest=tl[tl.length-1];
   var first=tl[0];
@@ -7303,42 +8133,72 @@ function renderPersonalDetail(uid){
   }
   h+='</div>';
 
-  // ===== 동일인 추정 이력 (주민번호 7자리 매칭) =====
-  var relatedUids=[];
-  if(rr&&rr.resident){
-    var myRrn7=String(rr.resident).replace(/[^\d]/g,"").slice(0,7);
-    if(myRrn7.length===7){
-      var seenU={};
-      Object.keys(MONTHS_DATA).forEach(function(mk){
-        (MONTHS_DATA[mk].rawRecords||[]).forEach(function(r){
-          if(r._uid===uid)return;
-          if(seenU[r._uid])return;
-          var otherRrn7=String(r.resident||"").replace(/[^\d]/g,"").slice(0,7);
-          if(otherRrn7===myRrn7&&otherRrn7.length===7){
-            seenU[r._uid]=true;
-            relatedUids.push({uid:r._uid,name:r.name,campus:r.campus,grade:r.grade,month:mk});
-          }
-        });
-      });
-    }
+  // 통합 표시 배너 (2단계 — 같은 13자리+연속재직 기록을 한 카드로)
+  if(_mg.merged){
+    var _mNames={};
+    _mg.uids.forEach(function(u2){(all[u2]||[]).forEach(function(e){if(e.name)_mNames[e.name]=1;});});
+    h+='<div style="background:#E8F5E9;border:1px solid #A5D6A7;border-left:4px solid #2E7D32;border-radius:8px;padding:8px 14px;margin-bottom:10px;font-size:11px;color:#1B5E20"><b>🔗 통합 표시 중</b> — 주민번호 13자리 일치·연속재직으로 확인된 '+_mg.uids.length+'개 기록('+Object.keys(_mNames).map(esc).join(", ")+')을 한 카드로 합쳐 보여줍니다. 원본 데이터·UID는 변경되지 않습니다.</div>';
   }
+
+  // ===== 동일인 이력 (주민번호 13자리 전체 매칭) =====
+  // 확정: 양쪽 다 13자리이고 전체 일치 (개명·영문전환도 정확히 잡힘)
+  // 미확정: 한쪽이라도 7자리뿐 (외국인 등록번호 대기 등) — 단정하지 않고 표시만
+  // 제외: 양쪽 다 13자리인데 다름 = 생일만 같은 다른 사람 → 아예 표시 안 함
+  // 통합 표시 중인 그룹 구성원은 박스에서 제외 (이미 이 카드에 합쳐짐)
+  var relatedUids=[];
+  (function(){
+    var uidBest={};// uid → 전 기간 중 가장 긴 주민번호 + 최신 정보 + 재직월 Set
+    Object.keys(MONTHS_DATA).sort(monthCompare).forEach(function(mk){
+      (MONTHS_DATA[mk].rawRecords||[]).forEach(function(r){
+        if(!r._uid)return;
+        var d=String(r.resident||"").replace(/[^\d]/g,"");
+        var b=uidBest[r._uid];
+        if(!b){b=uidBest[r._uid]={res:d,name:r.name,campus:r.campus,grade:r.grade,month:mk,months:{}};}
+        else{if(d.length>b.res.length)b.res=d;b.name=r.name;b.campus=r.campus;b.grade=r.grade;b.month=mk;}
+        b.months[mk]=true;
+      });
+    });
+    var me=uidBest[uid];
+    var myRes=me?me.res:String((rr&&rr.resident)||"").replace(/[^\d]/g,"");
+    if(myRes.length<7)return;
+    var my7=myRes.slice(0,7);
+    Object.keys(uidBest).forEach(function(u){
+      if(u===uid)return;
+      if(_mg.merged&&_mg.uids.indexOf(u)>=0)return;// 이 카드에 통합 표시 중인 기록 → 박스 제외
+      var o=uidBest[u];
+      if(o.res.length<7||o.res.slice(0,7)!==my7)return;
+      var conf;
+      if(myRes.length>=13&&o.res.length>=13){
+        if(myRes.slice(0,13)!==o.res.slice(0,13))return;// 전체 번호 다름 = 다른 사람 → 표시 안 함
+        conf="확정";
+      }else{
+        conf="미확정";
+        // 같은 달 동시 재직이면 다른 사람 가능성 높음
+        if(me&&Object.keys(o.months).some(function(m){return me.months[m];}))conf="동시재직";
+      }
+      relatedUids.push({uid:u,name:o.name,campus:o.campus,grade:o.grade,month:o.month,conf:conf});
+    });
+  })();
   if(relatedUids.length){
-    // 가장 최근 월 기준으로 정렬
-    relatedUids.sort(function(a,b){return monthCompare(b.month,a.month);});
+    // 확정 먼저, 그 안에서 최근 월 순
+    relatedUids.sort(function(a,b){var ca=a.conf==="확정"?0:1,cb=b.conf==="확정"?0:1;return ca-cb||monthCompare(b.month,a.month);});
+    var cntConf=relatedUids.filter(function(r){return r.conf==="확정";}).length;
+    var cntPend=relatedUids.length-cntConf;
     var hasBlacklistedRelated=relatedUids.some(function(r){return isBlacklisted(r.uid);});
     var alertBorder=hasBlacklistedRelated?"#B71C1C":"#E65100";
     var alertBg=hasBlacklistedRelated?"#FFEBEE":"#FFF3E0";
     var alertBdr=hasBlacklistedRelated?"#FFCDD2":"#FFCC80";
     h+='<div style="background:'+alertBg+';border:1px solid '+alertBdr+';border-left:4px solid '+alertBorder+';border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:11.5px">';
-    h+='<div style="font-weight:800;color:'+alertBorder+';font-size:11.5px;margin-bottom:5px">🔗 동일인 추정 이력 '+relatedUids.length+'건'+(hasBlacklistedRelated?' <span style="background:#B71C1C;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;margin-left:6px">⛔ 블랙리스트 포함</span>':'')+'</div>';
+    h+='<div style="font-weight:800;color:'+alertBorder+';font-size:11.5px;margin-bottom:5px">🔗 동일인 이력'+(cntConf?' 확정 '+cntConf+'건':'')+(cntPend?(cntConf?' ·':'')+' 미확정 '+cntPend+'건':'')+(hasBlacklistedRelated?' <span style="background:#B71C1C;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;margin-left:6px">⛔ 블랙리스트 포함</span>':'')+'</div>';
     h+='<div style="color:#5C4033;line-height:1.8">';
     h+=relatedUids.map(function(r){
       var bl=isBlacklisted(r.uid);
       var blMark=bl?'<span style="color:#B71C1C;font-weight:800;margin-left:3px">⛔</span>':"";
-      return '<a onclick="state.personalSelected=\''+esc(r.uid)+'\';render()" style="color:#1565C0;cursor:pointer;text-decoration:underline;font-weight:700">'+esc(r.name||"이름불명")+'</a>'+blMark+' <span style="font-size:10.5px;color:#9aa0a8">('+esc(r.campus||"-")+' · '+esc(r.grade||"-")+' · '+esc(r.month)+')</span>';
+      var tag=r.conf==="확정"?'<span style="background:#2E7D32;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;margin-left:3px">동일인 확정</span>':r.conf==="동시재직"?'<span style="background:#9E9E9E;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;margin-left:3px">미확정·동시재직</span>':'<span style="background:#F57F17;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;margin-left:3px">미확정</span>';
+      return '<a onclick="state.personalSelected=\''+esc(r.uid)+'\';render()" style="color:#1565C0;cursor:pointer;text-decoration:underline;font-weight:700">'+esc(r.name||"이름불명")+'</a>'+tag+blMark+' <span style="font-size:10.5px;color:#9aa0a8">('+esc(r.campus||"-")+' · '+esc(r.grade||"-")+' · '+esc(r.month)+')</span>';
     }).join('  ·  ');
     h+='</div>';
-    h+='<div style="font-size:9.5px;color:#9aa0a8;margin-top:6px">※ 주민번호 앞 7자리 기준 매칭 (다른 최초입사일 = 별개 UID) · 이름 클릭 시 그 카드로 이동</div>';
+    h+='<div style="font-size:9.5px;color:#9aa0a8;margin-top:6px">※ 확정 = 주민(외국인)번호 13자리 전체 일치 · 미확정 = 한쪽 번호가 7자리뿐(등록번호 대기 등) · 전체 번호가 다른 사람은 표시 안 함 · 이름 클릭 시 그 카드로 이동</div>';
     h+='</div>';
   }
 
@@ -7355,13 +8215,24 @@ function renderPersonalDetail(uid){
   // 급여 라인차트 (29번) — 기간: 최근 12개월(기본) / 전체 / 년도 드롭다운
   var tlRange=state.personalTimelineRange||"12m";
   if(tlRange==="year")tlRange="12m"; // 구버전 호환 (해당년도 토글 제거됨)
-  var tlChart=tl;
+  // 차트용: 같은 달 여러 행(전배 월 등)은 월당 한 점으로
+  // 실지급 = 합산 (캠퍼스별로 나눠 지급) · 기본월급여 = 합산 안 함, 최댓값 (월급 수준 — 일할계산 없음)
+  var _tlAgg=(function(){
+    var bm={},mos=[];
+    tl.forEach(function(x){
+      if(!bm[x.month]){bm[x.month]={month:x.month,basePay:0,netPay:0};mos.push(x.month);}
+      bm[x.month].basePay=Math.max(bm[x.month].basePay,x.basePay||0);
+      bm[x.month].netPay+=(x.netPay||0);
+    });
+    return mos.map(function(m){return bm[m];});
+  })();
+  var tlChart=_tlAgg;
   var _tlYr="";
   if(tlRange==="12m"){
-    tlChart=tl.slice(-12);
+    tlChart=_tlAgg.slice(-12);
   }else if(/^y_\d{4}$/.test(tlRange)){
     _tlYr=tlRange.substring(2);
-    tlChart=tl.filter(function(x){
+    tlChart=_tlAgg.filter(function(x){
       return (x.month.match(/(\d{4})/)||[])[1]===_tlYr;
     });
   }
@@ -8649,9 +9520,10 @@ var GRADE_RANK={
 // 변경 종류 분류 (전근/승진/보직변경)
 function classifyTransferChange(t){
   var types=[];
-  var hasC=(t.prevCampus||"")!==(t.campus||"")&&t.prevCampus&&t.campus;
+  // 캠퍼스 발령: campusType(신규 단일월 방식) 우선, 없으면 prevCampus≠campus(구 레코드 호환)
+  if(t.campusType)types.push(t.campusType);
+  else{var hasC=(t.prevCampus||"")!==(t.campus||"")&&t.prevCampus&&t.campus;if(hasC)types.push("전근");}
   var hasG=(t.prevGrade||"")!==(t.grade||"")&&t.prevGrade&&t.grade;
-  if(hasC)types.push("전근");
   if(hasG){
     var prevR=GRADE_RANK[t.prevGrade]||0;
     var newR=GRADE_RANK[t.grade]||0;
@@ -8684,31 +9556,55 @@ function getLatestMemoDateForUid(uid){
   return null;
 }
 
-// 자동 감지 (이전 월 ↔ 해당 월 비교)
+// 자동 감지 (단일 월 날짜 기반: 입사일/퇴사일/최초입사일)
+// 캠퍼스: 전근 = A행 퇴사일 + 0~3일 내 다른 재직 캠퍼스 입사 (전배). 겸직/전입은 발령으로 표시 안 함
+// 직책(승진/보직변경): 전월 직책과 비교
 function detectTransfersForMonth(targetMonth){
   var months=Object.keys(MONTHS_DATA).sort(monthCompare);
   var idx=months.indexOf(targetMonth);
-  if(idx<=0)return[];
-  var prevMk=months[idx-1];
   var curRaw=(MONTHS_DATA[targetMonth]&&MONTHS_DATA[targetMonth].rawRecords)||[];
-  var prevRaw=(MONTHS_DATA[prevMk]&&MONTHS_DATA[prevMk].rawRecords)||[];
-  var prevMap={};
-  prevRaw.forEach(function(p){if(p._uid)prevMap[p._uid]=p;});
+  var prevMk=idx>0?months[idx-1]:null;
+  var prevRaw=prevMk?((MONTHS_DATA[prevMk]&&MONTHS_DATA[prevMk].rawRecords)||[]):[];
+  var prevByUid={};
+  prevRaw.forEach(function(p){if(!p._uid)return;var c=prevByUid[p._uid];if(!c||(!p.leaveDate&&c.leaveDate))prevByUid[p._uid]=p;});
+  var monthPrefix=monthKeyToDatePrefix(targetMonth);
+  function nrm(s){var n=String(s||"").replace(/[.\/]/g,"-").replace(/\s/g,"");var m=n.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);return m?m[1]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[3]).slice(-2):n.slice(0,10);}
+  function dayDiff(a,b){var ma=nrm(a).match(/^(\d{4})-(\d{2})-(\d{2})$/),mb=nrm(b).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!ma||!mb)return null;return Math.round((new Date(+mb[1],+mb[2]-1,+mb[3])-new Date(+ma[1],+ma[2]-1,+ma[3]))/86400000);}
 
+  var byUid={};
+  curRaw.forEach(function(r){if(r._uid)(byUid[r._uid]=byUid[r._uid]||[]).push(r);});
   var transfers=[];
-  curRaw.forEach(function(cur){
-    if(!cur._uid)return;
-    var prev=prevMap[cur._uid];
-    if(!prev)return;
-    var hasC=(cur.campus||"")!==(prev.campus||"")&&cur.campus&&prev.campus;
-    var hasG=(cur.grade||"")!==(prev.grade||"")&&cur.grade&&prev.grade;
-    if(!hasC&&!hasG)return;// 캠퍼스/직책 변경만 발령으로 인식 (고용형태만 바뀐 건 제외)
-    transfers.push({
-      _uid:cur._uid,name:cur.name||prev.name,
-      campus:cur.campus,grade:cur.grade,gubn:cur.gubn,
-      prevCampus:prev.campus,prevGrade:prev.grade,prevGubn:prev.gubn,
-      toMonth:targetMonth,fromMonth:prevMk
-    });
+  Object.keys(byUid).forEach(function(uid){
+    var rows=byUid[uid];
+    var name=rows[0].name;
+    var curMain=rows.filter(function(x){return !x.leaveDate;}).slice(-1)[0]||rows[rows.length-1];
+    var prevMain=prevByUid[uid]||null;
+    var prevGrade=prevMain?prevMain.grade:"";
+    var prevGubn=prevMain?prevMain.gubn:"";
+    var gradeChanged=prevGrade&&curMain.grade&&prevGrade!==curMain.grade;
+
+    var events=[];
+    // 전배만 발령으로: A행 퇴사일 + 0~3일 내 입사한 재직 캠퍼스 B → A→B 전근
+    // (B가 옛날부터 있던 곳 = 겸직 해제 / 겸직 시작 / 전입은 발령으로 표시하지 않음)
+    if(rows.length>=2){
+      rows.forEach(function(a){
+        if(!a.leaveDate)return;
+        var b=rows.find(function(x){
+          if(x===a||x.leaveDate||!x.joinDate)return false;
+          var g=dayDiff(a.leaveDate,x.joinDate);// B입사 - A퇴사 (일)
+          return g!==null&&g>=0&&g<=3;
+        });
+        if(b)events.push({campusType:"전근",prevCampus:a.campus,campus:b.campus,date:nrm(b.joinDate)});
+      });
+    }
+
+    if(events.length){
+      events.forEach(function(ev,i){
+        transfers.push({_uid:uid,name:name,campus:ev.campus||curMain.campus,grade:curMain.grade,gubn:curMain.gubn,prevCampus:ev.prevCampus,prevGrade:i===0?prevGrade:"",prevGubn:i===0?prevGubn:"",toMonth:targetMonth,fromMonth:prevMk,campusType:ev.campusType,evDate:ev.date});
+      });
+    }else if(gradeChanged){
+      transfers.push({_uid:uid,name:name,campus:curMain.campus,grade:curMain.grade,gubn:curMain.gubn,prevCampus:"",prevGrade:prevGrade,prevGubn:prevGubn,toMonth:targetMonth,fromMonth:prevMk,campusType:"",evDate:""});
+    }
   });
   return transfers;
 }
@@ -8745,9 +9641,11 @@ function ensureAutoTransfers(){
   var beforeLen=D().transferRecords.length;
   D().transferRecords=D().transferRecords.filter(function(t){
     if(t.source!=="auto")return true;// manual/excel/modified는 유지
-    var hasC=(t.prevCampus||"")!==(t.campus||"")&&t.prevCampus&&t.campus;
+    if(t.campusType===undefined)return false;// 구 형식 auto → 재감지
+    if(t.campusType==="겸직해제"||t.campusType==="겸직시작"||t.campusType==="전입")return false;// 발령 표시 안 함 → 제거
+    if(t.campusType)return true;// 전근
     var hasG=(t.prevGrade||"")!==(t.grade||"")&&t.prevGrade&&t.grade;
-    return hasC||hasG;
+    return hasG;// 직책만 변경
   });
   if(D().transferRecords.length<beforeLen)scheduleSave();
 
@@ -8760,15 +9658,16 @@ function ensureAutoTransfers(){
   for(var i=1;i<months.length;i++){
     var detected=detectTransfersForMonth(months[i]);
     detected.forEach(function(t){
-      var key=t._uid+"|"+months[i];
+      var key=t._uid+"|"+months[i]+"|"+(t.campusType||"G")+"|"+(t.campus||"");
       if(existingKeys[key])return;
       var rec={
         _id:"tr_"+Date.now()+"_"+Math.random().toString(36).slice(2,8),
         _autoKey:key,_uid:t._uid,name:t.name,
         campus:t.campus,grade:t.grade,gubn:t.gubn,
         prevCampus:t.prevCampus,prevGrade:t.prevGrade,prevGubn:t.prevGubn,
-        toMonth:t.toMonth,
-        date:getLatestMemoDateForUidAtMonth(t._uid,t.toMonth,t.name)||"",
+        toMonth:t.toMonth,campusType:t.campusType||"",
+        date:t.evDate||getLatestMemoDateForUidAtMonth(t._uid,t.toMonth,t.name)||"",
+        _dateFromData:!!t.evDate,
         source:"auto"
       };
       if(!rec.date){
@@ -8787,6 +9686,7 @@ function ensureAutoTransfers(){
   var fixed=0;
   D().transferRecords.forEach(function(t){
     if(t.source!=="auto")return;
+    if(t._dateFromData)return;// 캠퍼스입사일 등 데이터 기반 날짜는 메모로 덮지 않음
     var memoDate=getLatestMemoDateForUidAtMonth(t._uid,t.toMonth,t.name);
     if(memoDate&&memoDate!==t.date){
       t.date=memoDate;fixed++;
@@ -9025,6 +9925,21 @@ function uploadTransferExcel(){
   inp.click();
 }
 
+function exportTransferCSV(){
+  var view=state.transferView||"monthly",filter=state.transferFilter||"all",selCp=state.transferCampus||"전체";
+  var yearM=String(curMonth).match(/(\d{4})/),curYear=yearM?yearM[1]:"";
+  var all=(D().transferRecords||[]).slice();
+  if(view==="monthly")all=all.filter(function(t){return t.toMonth===curMonth;});
+  else if(view==="yearly")all=all.filter(function(t){return String(t.toMonth||"").indexOf(curYear)>=0;});
+  if(selCp!=="전체")all=all.filter(function(t){return t.campus===selCp;});
+  if(filter!=="all")all=all.filter(function(t){return(t.classification||[]).indexOf(filter)>=0;});
+  all.sort(function(a,b){return String(b.date||b.toMonth||"").localeCompare(String(a.date||a.toMonth||""));});
+  if(!all.length){notify("데이터 없음","warn");return;}
+  var rows=[["발령월","일자","이름","변경구분","기존캠퍼스","캠퍼스","기존직책","직책"]];
+  all.forEach(function(t){rows.push([t.toMonth||"",t.date||"",t.name||"",(t.classification||[]).join("/"),t.prevCampus||"",t.campus||"",t.prevGrade||"",t.grade||""]);});
+  var csv=rows.map(function(r){return r.map(function(c){return'"'+String(c||"").replace(/"/g,'""')+'"';}).join(",");}).join("\n");
+  var blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=curMonth+"_인사발령.csv";a.click();URL.revokeObjectURL(url);
+}
 function renderTransfer(){
   ensureAutoTransfers();
   var view=state.transferView||"monthly";
@@ -9041,6 +9956,9 @@ function renderTransfer(){
 
   // 2) 캠퍼스 필터
   if(selCp!=="전체")all=all.filter(function(t){return t.campus===selCp;});
+  // 2.5) 이름 검색
+  var trq=(state.transferSearch||"").trim().toLowerCase();
+  if(trq)all=all.filter(function(t){return String(t.name||"").toLowerCase().indexOf(trq)>=0;});
 
   // 3) classification 필터 (KPI 클릭)
   var byCls={};
@@ -9048,17 +9966,29 @@ function renderTransfer(){
   var filtered=all.slice();
   if(filter!=="all")filtered=all.filter(function(t){return(t.classification||[]).indexOf(filter)>=0;});
 
-  // 정렬: 일자 내림차순
-  filtered.sort(function(a,b){return String(b.date||b.toMonth||"").localeCompare(String(a.date||a.toMonth||""));});
+  // 정렬: 캠퍼스 → 동일인물 묶음(그 사람 가장 이른 일자 기준) → 같은 사람은 일자 오래된순
+  var _minD={};
+  filtered.forEach(function(t){var pk=(t._uid||t.name)||"";var d=String(t.date||t.toMonth||"");if(!_minD[pk]||d<_minD[pk])_minD[pk]=d;});
+  filtered.sort(function(a,b){
+    var ca=String(a.campus||""),cb=String(b.campus||"");if(ca!==cb)return ca.localeCompare(cb);
+    var pa=(a._uid||a.name)||"",pb=(b._uid||b.name)||"";
+    var ma=_minD[pa]||"",mb=_minD[pb]||"";if(ma!==mb)return ma.localeCompare(mb);
+    if(pa!==pb)return String(a.name||"").localeCompare(String(b.name||""));
+    return String(a.date||"").localeCompare(String(b.date||""));
+  });
 
   var viewLabel=view==="monthly"?esc(curMonth):view==="yearly"?(curYear+"년 누적"):"전 기간 누적";
 
   var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">';
+  h+='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
   h+='<div style="font-size:13px;font-weight:800;color:#5E35B1">📤 인사 발령 <span style="font-size:11px;color:#888;font-weight:500;margin-left:6px">총 '+filtered.length+'건 · '+viewLabel+'</span></div>';
+  h+='<input id="trSearch" value="'+esc(state.transferSearch||"")+'" oncompositionstart="this.dataset._composing=\'1\'" oncompositionend="this.dataset._composing=\'\';safeInputUpdate(this,function(v){state.transferSearch=v;});" oninput="safeInputUpdate(this,function(v){state.transferSearch=v;});" placeholder="🔍 이름 검색" style="padding:6px 12px;border:1px solid #ddd;border-radius:7px;font-size:11px;font-family:inherit;width:160px">';
+  h+='</div>';
   h+='<div style="display:flex;gap:6px">';
   h+='<button onclick="addBlankTransferRow()" style="padding:6px 12px;background:#fff;color:#5E35B1;border:1px solid #D1C4E9;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">＋ 행 추가</button>';
   h+='<button onclick="recalcAutoTransferDates()" style="padding:6px 12px;background:#fff;color:#1565C0;border:1px solid #BBDEFB;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer" title="자동 발령 일자를 현재 메모 기반으로 다시 계산">🔄 일자 재계산</button>';
   h+='<button onclick="uploadTransferExcel()" style="padding:6px 12px;background:#5E35B1;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">📥 엑셀 업로드</button>';
+  h+='<button onclick="exportTransferCSV()" style="padding:6px 12px;background:#fff;color:#666;border:1px solid #ddd;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">⬇ CSV</button>';
   h+='</div></div>';
 
   // 토글 + 캠퍼스 + 필터 해제 한 줄
@@ -9229,6 +10159,8 @@ function renderMaternity(){
   var filtered=recs.slice();
   if(selCp!=="전체")filtered=filtered.filter(function(r){return r.campus===selCp;});
   if(selCat!=="all")filtered=filtered.filter(function(r){return r.category===selCat;});
+  var matq=(state.matSearch||"").trim().toLowerCase();
+  if(matq)filtered=filtered.filter(function(r){return String(r.name||"").toLowerCase().indexOf(matq)>=0;});
 
   // 분류 카운트 (필터 전 기준)
   var catCnt={};
@@ -9236,7 +10168,10 @@ function renderMaternity(){
 
   // ===== 헤더 =====
   var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">';
+  h+='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
   h+='<div style="font-size:13px;font-weight:800;color:#E91E63">🤱 모성보호 <span style="font-size:11px;color:#888;font-weight:500;margin-left:6px">총 '+filtered.length+'명 · '+viewLabel+'</span></div>';
+  h+='<input id="matSearch" value="'+esc(state.matSearch||"")+'" oncompositionstart="this.dataset._composing=\'1\'" oncompositionend="this.dataset._composing=\'\';safeInputUpdate(this,function(v){state.matSearch=v;});" oninput="safeInputUpdate(this,function(v){state.matSearch=v;});" placeholder="🔍 이름 검색" style="padding:6px 12px;border:1px solid #ddd;border-radius:7px;font-size:11px;font-family:inherit;width:160px">';
+  h+='</div>';
   h+='<div style="display:flex;gap:6px">';
   h+='<button onclick="showAddMaternity()" style="padding:6px 12px;background:#fff;color:#E91E63;border:1px solid #F8BBD0;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">＋ 직접 등록</button>';
   h+='<button onclick="exportMaternityCSV()" style="padding:6px 12px;background:#fff;color:#666;border:1px solid #ddd;border-radius:7px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">⬇ CSV</button>';
@@ -9859,8 +10794,13 @@ function onMonthRemoteChange(monthKey,data){
   if(data._by===FB.clientId)return;
   FB.applyingRemote=true;
   try{
-    // _by, _at 메타필드 제거
-    var cleanData={deptData:data.deptData||{campuses:[]},rawRecords:data.rawRecords||[],inoutRecords:data.inoutRecords||[],maternityRecords:data.maternityRecords||[]};
+    // _by, _at 메타필드만 제거하고 나머지 키 전부 보존 (transferRecords/campusMetrics/gradePayOverrides 등 수기 입력 데이터 유실 방지)
+    var cleanData={};
+    Object.keys(data).forEach(function(k){if(k!=="_by"&&k!=="_at")cleanData[k]=data[k];});
+    if(!cleanData.deptData)cleanData.deptData={campuses:[]};
+    if(!cleanData.rawRecords)cleanData.rawRecords=[];
+    if(!cleanData.inoutRecords)cleanData.inoutRecords=[];
+    if(!cleanData.maternityRecords)cleanData.maternityRecords=[];
     MONTHS_DATA[monthKey]=cleanData;
     // 원격 데이터의 캠퍼스명 정규화 (예: "일산엠" → "일산M")
     try{if(typeof normalizeAllCampusNames==="function")normalizeAllCampusNames();}catch(e){}
@@ -9923,24 +10863,26 @@ function onGlobalRemoteChange(key,data){
   }finally{FB.applyingRemote=false;}
 }
 
+// 내용 기반 짧은 해시 (글자 수가 아닌 실제 내용으로 지문 생성 — 같은 자리수 숫자 수정도 감지)
+function _strHash(s){s=String(s);var h=5381,i=s.length;while(i)h=((h*33)^s.charCodeAt(--i))>>>0;return h.toString(36);}
 // 월 데이터 해시 (빠른 변경 감지)
 function hashMonth(monthKey){
   var md=MONTHS_DATA[monthKey];if(!md)return "";
   try{
     var cnt=0;(md.deptData&&md.deptData.campuses||[]).forEach(function(cp){cp.teams.forEach(function(t){cnt+=(t.employees||[]).length;});});
-    return monthKey+":"+cnt+":"+(md.rawRecords||[]).length+":"+(md.inoutRecords||[]).length+":"+(md.maternityRecords||[]).length+":"+JSON.stringify(md.deptData||{}).length;
+    return monthKey+":"+cnt+":"+(md.rawRecords||[]).length+":"+(md.inoutRecords||[]).length+":"+(md.maternityRecords||[]).length+":"+_strHash(JSON.stringify(md));
   }catch(e){return String(Date.now());}
 }
 
 // 전역 해시
 function hashGlobal(key){
   try{
-    if(key==="adminCards")return JSON.stringify(GLOBAL_ADMIN_CARDS||{}).length+"";
-    if(key==="retiredManagers")return (GLOBAL_RETIRED_MANAGERS||[]).length+"";
-    if(key==="adminComments")return JSON.stringify(GLOBAL_ADMIN_COMMENTS||{}).length+"";
-    if(key==="payHistoryNotes")return JSON.stringify(GLOBAL_PAY_HISTORY_NOTES||{}).length+"_"+JSON.stringify(GLOBAL_PAY_HISTORY_NOTES_BY_MONTH||{}).length+"_"+(PAY_HISTORY_LAST_UPLOAD?PAY_HISTORY_LAST_UPLOAD.at:"");
-    if(key==="settings")return JSON.stringify({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors}).length+"";
-    if(key==="history")return (state.history||[]).length+"";
+    if(key==="adminCards")return _strHash(JSON.stringify(GLOBAL_ADMIN_CARDS||{}));
+    if(key==="retiredManagers")return _strHash(JSON.stringify(GLOBAL_RETIRED_MANAGERS||[]));
+    if(key==="adminComments")return _strHash(JSON.stringify(GLOBAL_ADMIN_COMMENTS||{}));
+    if(key==="payHistoryNotes")return _strHash(JSON.stringify(GLOBAL_PAY_HISTORY_NOTES||{}))+"_"+_strHash(JSON.stringify(GLOBAL_PAY_HISTORY_NOTES_BY_MONTH||{}))+"_"+(PAY_HISTORY_LAST_UPLOAD?PAY_HISTORY_LAST_UPLOAD.at:"");
+    if(key==="settings")return _strHash(JSON.stringify({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors}));
+    if(key==="history")return _strHash(JSON.stringify(state.history||[]));
   }catch(e){}
   return "";
 }
@@ -9978,6 +10920,22 @@ function pushAllToFirebaseV2(){
 // Firebase 경로에 안전한 키 변환 (. $ # [ ] / 제거)
 function fbSafeKey(s){return String(s).replace(/[\.\$#\[\]\/]/g,"_");}
 
+// 객체 전체를 재귀로 돌며 Firebase 금지문자가 든 키를 안전화(generateUid와 동일하게 제거).
+// 업로드 직전에 적용 → 이름에 마침표 등이 있어도 set 실패 안 함. 충돌 키는 병합.
+function fbSafeKeysDeep(o){
+  if(Array.isArray(o))return o.map(fbSafeKeysDeep);
+  if(o&&typeof o==="object"){
+    var out={};
+    Object.keys(o).forEach(function(k){
+      var sk=/[.#$\[\]\/]/.test(k)?String(k).replace(/[.#$\[\]\/]/g,""):k;
+      var v=fbSafeKeysDeep(o[k]);
+      out[sk]=(out[sk]&&typeof out[sk]==="object"&&typeof v==="object")?Object.assign({},out[sk],v):v;
+    });
+    return out;
+  }
+  return o;
+}
+
 // 변경된 것만 업로드 (diff 기반)
 function pushChangedToFirebase(){
   if(!FB.rootRef||FB.applyingRemote)return Promise.resolve(false);
@@ -9991,7 +10949,7 @@ function pushChangedToFirebase(){
     var curHash=hashMonth(mk);
     if(_monthHashes[mk]!==curHash){
       var md=MONTHS_DATA[mk];
-      tasks.push(FB.rootRef.child("months/"+fbSafeKey(mk)).set(Object.assign({},md,{_by:FB.clientId,_at:Date.now()})));
+      tasks.push(FB.rootRef.child("months/"+fbSafeKey(mk)).set(fbSafeKeysDeep(Object.assign({},md,{_by:FB.clientId,_at:Date.now()}))));
       _monthHashes[mk]=curHash;
       changes.push("month:"+mk);
     }
@@ -10009,48 +10967,39 @@ function pushChangedToFirebase(){
   // 전역 변경 확인
   var ch=hashGlobal("adminCards");
   if(_globalHashes.adminCards!==ch){
-    tasks.push(FB.rootRef.child("adminCards").set({_payload:GLOBAL_ADMIN_CARDS,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("adminCards").set(fbSafeKeysDeep({_payload:GLOBAL_ADMIN_CARDS,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.adminCards=ch;changes.push("adminCards");
   }
   ch=hashGlobal("retiredManagers");
   if(_globalHashes.retiredManagers!==ch){
-    tasks.push(FB.rootRef.child("retiredManagers").set({_payload:GLOBAL_RETIRED_MANAGERS,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("retiredManagers").set(fbSafeKeysDeep({_payload:GLOBAL_RETIRED_MANAGERS,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.retiredManagers=ch;changes.push("retired");
   }
   ch=hashGlobal("adminComments");
   if(_globalHashes.adminComments!==ch){
-    tasks.push(FB.rootRef.child("adminComments").set({_payload:GLOBAL_ADMIN_COMMENTS,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("adminComments").set(fbSafeKeysDeep({_payload:GLOBAL_ADMIN_COMMENTS,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.adminComments=ch;changes.push("comments");
   }
   ch=hashGlobal("payHistoryNotes");
   if(_globalHashes.payHistoryNotes!==ch){
-    tasks.push(FB.rootRef.child("payHistoryNotes").set({_payload:GLOBAL_PAY_HISTORY_NOTES,_payloadByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,_lastUpload:PAY_HISTORY_LAST_UPLOAD,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("payHistoryNotes").set(fbSafeKeysDeep({_payload:GLOBAL_PAY_HISTORY_NOTES,_payloadByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,_lastUpload:PAY_HISTORY_LAST_UPLOAD,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.payHistoryNotes=ch;changes.push("payHistoryNotes");
   }
   ch=hashGlobal("settings");
   if(_globalHashes.settings!==ch){
-    tasks.push(FB.rootRef.child("settings").set({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("settings").set(fbSafeKeysDeep({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.settings=ch;changes.push("settings");
   }
   ch=hashGlobal("history");
   if(_globalHashes.history!==ch){
-    tasks.push(FB.rootRef.child("history").set({_payload:state.history,_by:FB.clientId,_at:Date.now()}));
+    tasks.push(FB.rootRef.child("history").set(fbSafeKeysDeep({_payload:state.history,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.history=ch;changes.push("history");
   }
 
   if(!tasks.length)return Promise.resolve(true);// 변경 없음
 
   return Promise.all(tasks).then(function(){
-    // localStorage 백업 (전체 스냅샷)
-    try{
-      localStorage.setItem("hr_poly_data",JSON.stringify({
-        months:MONTHS_DATA,history:state.history,hiddenMonths:hiddenMonths,monthColors:monthColors,
-        curMonth:curMonth,CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,
-        adminCards:GLOBAL_ADMIN_CARDS,retiredManagers:GLOBAL_RETIRED_MANAGERS,adminComments:GLOBAL_ADMIN_COMMENTS,
-        payHistoryNotes:GLOBAL_PAY_HISTORY_NOTES,payHistoryNotesByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,payHistoryLastUpload:PAY_HISTORY_LAST_UPLOAD,
-        gasUrl:GAS_URL,gsheetView:GSHEET_VIEW_URL,profileGasUrl:PROFILE_GAS_URL
-      }));
-    }catch(e){}
+    saveLocalBackup();
     return true;
   }).catch(function(err){
     console.error("Firebase push changed error:",err);
@@ -10068,14 +11017,14 @@ function applyRemoteDataV2(remote){
       Object.keys(MONTHS_DATA).forEach(function(k){delete MONTHS_DATA[k];});
       Object.keys(remote.months).forEach(function(k){
         var md=remote.months[k];
-        // _by, _at 메타필드 제거
-        MONTHS_DATA[k]={
-          deptData:md.deptData||{campuses:[]},
-          rawRecords:md.rawRecords||[],
-          inoutRecords:md.inoutRecords||[],
-          maternityRecords:md.maternityRecords||[]
-        };
-        _monthHashes[k]=hashMonth(k);
+        // _by, _at 메타필드만 제거하고 나머지 키 전부 보존 (transferRecords/campusMetrics/gradePayOverrides 등 수기 입력 데이터 유실 방지)
+        var cd={};
+        Object.keys(md).forEach(function(kk){if(kk!=="_by"&&kk!=="_at")cd[kk]=md[kk];});
+        if(!cd.deptData)cd.deptData={campuses:[]};
+        if(!cd.rawRecords)cd.rawRecords=[];
+        if(!cd.inoutRecords)cd.inoutRecords=[];
+        if(!cd.maternityRecords)cd.maternityRecords=[];
+        MONTHS_DATA[k]=cd;
       });
     }
     // 전역
@@ -10103,7 +11052,8 @@ function applyRemoteDataV2(remote){
     _globalHashes.settings=hashGlobal("settings");
     _globalHashes.history=hashGlobal("history");
 
-    Object.keys(MONTHS_DATA).forEach(function(mk){ensureMonthStructure(mk);});
+    _sanitizeAllUids();// Firebase 로드 직후 모든 _uid 값/키에서 금지문자 제거 → 저장키와 일치(마침표 이름 매칭 보장)
+    Object.keys(MONTHS_DATA).forEach(function(mk){ensureMonthStructure(mk);_monthHashes[mk]=hashMonth(mk);});
     rebuildRetiredEmployees();
     if(!MONTHS_DATA[curMonth]){var ks=Object.keys(MONTHS_DATA);if(ks.length)curMonth=ks[ks.length-1];}
     var el=document.getElementById("gsLink");if(el)el.href=GSHEET_VIEW_URL;
@@ -10148,7 +11098,29 @@ function fbPut(data){return pushChangedToFirebase();}
 // 같은 _uid+캠퍼스+팀 중복 emp 행 제거
 // 변경된 매핑은 글로벌 데이터(retired/cards/notes/comments) 키에도 적용
 // ============================================================
+// _uid "값"에서도 Firebase 금지문자 제거 → 저장키(안전화됨)와 항상 일치시킴.
+// (fbSafeKeysDeep는 키만 고치므로, raw 등에 값으로 박힌 옛 _uid는 이걸로 정리)
+function _sanUid(u){return String(u||"").replace(/[.#$\[\]\/]/g,"");}
+function _sanitizeAllUids(){
+  var n=0;
+  function fixRecs(arr){if(arr)arr.forEach(function(r){if(r&&r._uid){var s=_sanUid(r._uid);if(s!==r._uid){r._uid=s;n++;}}});}
+  function fixMap(map){if(map&&typeof map==="object")Object.keys(map).forEach(function(k){var sk=_sanUid(k);if(sk!==k){map[sk]=(map[sk]&&typeof map[sk]==="object"&&typeof map[k]==="object")?Object.assign({},map[sk],map[k]):map[k];delete map[k];n++;}});}
+  Object.keys(MONTHS_DATA).forEach(function(mk){
+    var md=MONTHS_DATA[mk];if(!md)return;
+    if(md.deptData&&md.deptData.campuses)md.deptData.campuses.forEach(function(c){(c.teams||[]).forEach(function(t){fixRecs(t.employees);});});
+    fixRecs(md.rawRecords);fixRecs(md.inoutRecords);fixRecs(md.maternityRecords);fixRecs(md.transferRecords);
+    fixMap(md.gradePayOverrides);
+  });
+  if(typeof GLOBAL_PAY_HISTORY_NOTES!=="undefined")fixMap(GLOBAL_PAY_HISTORY_NOTES);
+  if(typeof GLOBAL_ADMIN_CARDS!=="undefined")fixMap(GLOBAL_ADMIN_CARDS);
+  if(typeof GLOBAL_ADMIN_COMMENTS!=="undefined")fixMap(GLOBAL_ADMIN_COMMENTS);
+  if(typeof GLOBAL_PAY_HISTORY_NOTES_BY_MONTH!=="undefined"&&GLOBAL_PAY_HISTORY_NOTES_BY_MONTH)Object.keys(GLOBAL_PAY_HISTORY_NOTES_BY_MONTH).forEach(function(mk){fixMap(GLOBAL_PAY_HISTORY_NOTES_BY_MONTH[mk]);});
+  if(n)console.log("UID 값 안전화:",n,"건");
+  return n;
+}
+
 function _normalizeUids(){
+  _sanitizeAllUids();// 먼저 모든 _uid 값/키에서 금지문자 제거 (저장키와 일치 보장)
   var MDS=Object.values(MONTHS_DATA);
   var norm=function(n){
     return String(n||"")
@@ -10215,6 +11187,16 @@ function _normalizeUids(){
     (m.transferRecords||[]).forEach(function(x){
       if(x._uid&&mapping[x._uid])x._uid=mapping[x._uid];
     });
+    // gradePayOverrides(수기 입력 저장소)도 uid 키 매핑 — 누락 시 uid 바뀔 때 수기값 유실!
+    if(m.gradePayOverrides){
+      Object.keys(m.gradePayOverrides).forEach(function(k){
+        var nk=mapping[k];
+        if(!nk||nk===k)return;
+        var ov=m.gradePayOverrides[k],nv=m.gradePayOverrides[nk];
+        m.gradePayOverrides[nk]=nv?Object.assign({},ov,nv):ov;// 기존 신키 우선, 옛 수기값으로 빈칸만 보강
+        delete m.gradePayOverrides[k];
+      });
+    }
   });
   // 글로벌 데이터 키 매핑
   ["GLOBAL_RETIRED_EMPLOYEES","GLOBAL_ADMIN_CARDS",
@@ -10308,16 +11290,70 @@ function _normalizeUids(){
   return{fixed:fixed,removed:removed,noteMoved:noteMoved};
 }
 
+// 이미 고아가 된 gradePayOverrides(옛 uid에 남은 수기값) 복구 — 같은 사람(personKey=주민+입사일)의 현재 uid로 재연결
+// 콘솔: recoverOrphanedOverrides(true) 로 미리보기 → recoverOrphanedOverrides() 로 실행
+function recoverOrphanedOverrides(dryRun){
+  var liveUids={},pkToUid={};
+  Object.keys(MONTHS_DATA).forEach(function(mk){
+    var md=MONTHS_DATA[mk];if(!md||!md.deptData)return;
+    md.deptData.campuses.forEach(function(c){c.teams.forEach(function(t){(t.employees||[]).forEach(function(e){
+      if(!e._uid)return;liveUids[e._uid]=1;pkToUid[personKeyFromUid(e._uid)]=e._uid;
+    });});});
+  });
+  var moved=[],unresolved=[];
+  Object.keys(MONTHS_DATA).forEach(function(mk){
+    var md=MONTHS_DATA[mk];if(!md||!md.gradePayOverrides)return;
+    Object.keys(md.gradePayOverrides).forEach(function(k){
+      if(liveUids[k])return;// 현재 직원이 쓰는 키 = 정상
+      var nk=pkToUid[personKeyFromUid(k)];
+      if(nk&&nk!==k){
+        if(!dryRun){
+          var ov=md.gradePayOverrides[k],nv=md.gradePayOverrides[nk];
+          md.gradePayOverrides[nk]=nv?Object.assign({},ov,nv):ov;
+          delete md.gradePayOverrides[k];
+        }
+        moved.push({month:mk,from:k,to:nk});
+      }else unresolved.push({month:mk,key:k});
+    });
+  });
+  if(!dryRun&&moved.length){if(typeof scheduleSave==="function")scheduleSave();if(typeof render==="function")render();}
+  console.log("===== 고아 수기값 복구 "+(dryRun?"[미리보기]":"[실행]")+" =====");
+  console.log("복구:",moved.length,"건 | 사람 못 찾음:",unresolved.length,"건");
+  if(moved.length)console.table(moved.slice(0,40));
+  if(unresolved.length)console.table(unresolved.slice(0,40));
+  return{moved:moved.length,unresolved:unresolved.length};
+}
+
+function saveLocalBackup(){
+  // localStorage 백업 (전체 스냅샷) — Firebase 성공 여부와 무관하게 데이터 보호
+  try{
+    localStorage.setItem("hr_poly_data",JSON.stringify({
+      months:MONTHS_DATA,history:state.history,hiddenMonths:hiddenMonths,monthColors:monthColors,
+      curMonth:curMonth,CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,
+      adminCards:GLOBAL_ADMIN_CARDS,retiredManagers:GLOBAL_RETIRED_MANAGERS,adminComments:GLOBAL_ADMIN_COMMENTS,
+      payHistoryNotes:GLOBAL_PAY_HISTORY_NOTES,payHistoryNotesByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,payHistoryLastUpload:PAY_HISTORY_LAST_UPLOAD,
+      gasUrl:GAS_URL,gsheetView:GSHEET_VIEW_URL,profileGasUrl:PROFILE_GAS_URL
+    }));
+    return true;
+  }catch(e){console.warn("localStorage 백업 실패(용량초과 등):",e&&e.name);return false;}
+}
+
 function scheduleSave(){
   if(FB.applyingRemote)return;
   setDot("busy","저장중...");clearTimeout(_saveTimer);
   _saveTimer=setTimeout(function(){
     if(_isSaving){scheduleSave();return;}_isSaving=true;
     invalidateTimelineCache();
-    pushChangedToFirebase().then(function(ok){
-      setDot(ok?"ok":"err",ok?"동기화됨":"실패");
-      _isSaving=false;
-    });
+    var localOk=saveLocalBackup();// ← Firebase 전에 즉시 로컬 백업(연결 끊겨도 데이터 보존)
+    var done=false;
+    function finish(ok,msg){if(done)return;done=true;setDot(ok?"ok":"err",msg);_isSaving=false;}
+    // 타임아웃을 먼저 등록 → push가 동기적으로 에러를 던져도(잘못된 키 등) "저장중" 무한대기 방지
+    setTimeout(function(){if(!done)finish(localOk,localOk?"로컬 저장됨(동기화 대기)":"실패");},10000);
+    try{
+      pushChangedToFirebase().then(function(ok){
+        finish(ok||localOk,ok?"동기화됨":(localOk?"로컬 저장됨(동기화 대기)":"동기화 실패"));
+      }).catch(function(err){console.error("Firebase 저장 에러:",err);finish(localOk,localOk?"로컬 저장됨(동기화 대기)":"동기화 실패");});
+    }catch(err){console.error("Firebase 저장 예외:",err);finish(localOk,localOk?"로컬 저장됨(동기화 대기)":"동기화 실패");}
   },CONFIG.FB_DEBOUNCE_MS);
 }
 
@@ -10372,18 +11408,13 @@ var _lastDataHash=null;
 // 데이터가 실제로 변했는지 체크 (간단한 해시)
 function _computeDataHash(){
   try{
-    return Object.keys(MONTHS_DATA).length+"|"+
-      JSON.stringify(state.history||[]).length+"|"+
-      JSON.stringify(GLOBAL_ADMIN_CARDS||{}).length+"|"+
-      JSON.stringify(GLOBAL_RETIRED_MANAGERS||[]).length+"|"+
-      JSON.stringify(GLOBAL_ADMIN_COMMENTS||{}).length+"|"+
+    return _strHash(JSON.stringify(MONTHS_DATA))+"|"+
+      _strHash(JSON.stringify(state.history||[]))+"|"+
+      _strHash(JSON.stringify(GLOBAL_ADMIN_CARDS||{}))+"|"+
+      _strHash(JSON.stringify(GLOBAL_RETIRED_MANAGERS||[]))+"|"+
+      _strHash(JSON.stringify(GLOBAL_ADMIN_COMMENTS||{}))+"|"+
       curMonth+"|"+
-      Object.keys(hiddenMonths||{}).join(",")+"|"+
-      Object.keys(MONTHS_DATA).map(function(mk){
-        var md=MONTHS_DATA[mk];if(!md||!md.deptData)return 0;
-        var cnt=0;md.deptData.campuses.forEach(function(cp){cp.teams.forEach(function(t){cnt+=(t.employees||[]).length;});});
-        return cnt+","+(md.rawRecords||[]).length+","+(md.inoutRecords||[]).length;
-      }).join("|");
+      Object.keys(hiddenMonths||{}).join(",");
   }catch(e){return Math.random().toString();}
 }
 render=function(){
@@ -10424,8 +11455,12 @@ setTimeout(initFirebase,200);
       _gsSyncState.lastSync=last;
       updateGSheetStatus();
     }else{
-      // Firebase가 먼저 연결되어 원격 데이터 받은 뒤 GSheet 동기화 (약 1.5초 후)
-      setTimeout(function(){syncFromGoogleSheet({silent:true});},1500);
+      // Firebase 원격 데이터 로드(FB.ready) 완료를 기다린 뒤 시트 동기화 — race(빈 데이터로 덮어써 수기값 유실) 방지
+      (function waitFB(tries){
+        if(FB.ready){setTimeout(function(){syncFromGoogleSheet({silent:true});},300);return;}// 적용 직후 한 박자
+        if(tries>=60){syncFromGoogleSheet({silent:true});return;}// 최대 ~18초 후엔 그냥 진행(Firebase 장애 등)
+        setTimeout(function(){waitFB(tries+1);},300);
+      })(0);
     }
   },600);
   // 1분마다 상태 표시 업데이트 (몇분 전 표시용)
