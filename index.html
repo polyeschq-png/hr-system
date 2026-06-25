@@ -4145,7 +4145,7 @@ function isReducedWork(emp){
 function _matCatFromText(s){
   s=String(s||"");
   if(/육아휴직|육휴/.test(s))return "육휴";
-  if(/출산전후|출산/.test(s))return "출산";
+  if(/출산전후|출산|출휴/.test(s))return "출산";
   if(/육아기|육단|단축/.test(s))return "육단";
   if(/휴직/.test(s))return "휴직";
   return null;
@@ -6793,7 +6793,7 @@ function parsePayNum(s){
 
 // ===== 사번 특수값 처리 =====
 var INOUT_EMPID_KEYWORDS=["입사","퇴사","입퇴사"];
-var MATERNITY_EMPID_KEYWORDS=["휴직","육휴","출산","육단","복직/인상","전환"];
+var MATERNITY_EMPID_KEYWORDS=["휴직","육휴","출산","출휴","육단","복직/인상","전환"];
 
 // 직책→팀 자동분류 맵
 var GRADE_TEAM_MAP={
@@ -6843,12 +6843,14 @@ function parseRawName(fullName){
   else if(p2>0)pMin=p2;
   if(pMin>0){
     var suffix=n.slice(pMin);
-    if(/[가-힣]/.test(suffix)){
+    // 괄호 안에 한글(라벨)이 있거나, 날짜/기간(~ 또는 25.12.25 형태)이면 꼬리표로 보고 이름에서 분리
+    // (영문 미들네임 "Hannah (Betsy) Ross"는 한글·날짜 없어 풀네임 유지)
+    if(/[가-힣]/.test(suffix)||/~/.test(suffix)||/\d[.\-\/]\d/.test(suffix)){
       return{name:n.slice(0,pMin).trim(),suffix:suffix};
     }
   }
   // 2) 괄호 없는 경우: 이름_키워드_날짜 형태
-  var m=n.match(/^(.+?)[\s_]+(육단|육휴|출산|육아휴직|복직|전환|휴직)/);
+  var m=n.match(/^(.+?)[\s_]+(육단|육휴|출산|출휴|육아휴직|복직|전환|휴직)/);
   if(m)return{name:m[1].trim(),suffix:n.slice(m[1].length).trim()};
   return{name:n,suffix:""};
 }
@@ -6985,9 +6987,9 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     }
 
     // 모성보호 자동 반영
-    var matKeywords=["휴직","육휴","출산","육단","복직","전환"];
+    var matKeywords=["휴직","육휴","출산","출휴","육단","복직","전환"];
     var isMat=matKeywords.some(function(k){return empIdStr.indexOf(k)>=0||String(rec.gubn||"").indexOf(k)>=0;});
-    if(!isMat&&rec.name)isMat=/(육단|육휴|출산|휴직|모성)/.test(rec.name);
+    if(!isMat&&rec.name)isMat=/(육단|육휴|출산|출휴|휴직|모성)/.test(rec.name);
     if(isMat){
       var parsed=parseRawName(rec.name||"");
       var dates=parseMaternityDates(parsed.suffix||rec.name);
@@ -10124,16 +10126,16 @@ function renderMaternity(){
   var recsThisMonth=D().maternityRecords;
   rawRecs.forEach(function(r){
     var empIdStr=String(r.empId||"").trim();
-    var matKeywords=["휴직","육휴","출산","육단","복직","전환"];
+    var matKeywords=["휴직","육휴","출산","출휴","육단","복직","전환"];
     var isMat=matKeywords.some(function(k){return empIdStr.indexOf(k)>=0;});
-    if(!isMat&&r.name)isMat=/(육단|육휴|출산|휴직)/.test(r.name);
+    if(!isMat&&r.name)isMat=/(육단|육휴|출산|출휴|휴직)/.test(r.name);
     if(!isMat)return;
     var parsed=parseRawName(r.name||"");var matName=parsed.name||r.name;
     var already=recsThisMonth.some(function(m){return m.name===matName;});
     if(!already){
       var dates=parseMaternityDates(parsed.suffix||r.name);
-      var catMatch=(parsed.suffix||r.name).match(/(육단|육휴|출산|휴직)/);
-      recsThisMonth.push({name:matName,campus:r.campus||"",grade:r.grade||"",gubn:r.gubn||"",category:catMatch?catMatch[1]:"휴직",startDate:dates.start,endDate:dates.end,rawName:r.name,empId:empIdStr,_fromRaw:true,_uploadedAt:r._uploadedAt||""});
+      var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(r.name||""))||"휴직";// 출휴 → 출산 포함
+      recsThisMonth.push({name:matName,campus:r.campus||"",grade:r.grade||"",gubn:r.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:r.name,empId:empIdStr,_fromRaw:true,_uploadedAt:r._uploadedAt||""});
     }
   });
 
@@ -10281,7 +10283,7 @@ function renderMaternity(){
   h+='</tbody></table></div></div>';
 
   h+='<div style="font-size:9.5px;color:#9da3ab;margin-top:10px;line-height:1.6">';
-  h+='※ 사번에 <code>육휴/출산/육단/휴직</code> 키워드 자동 감지 · 토글로 누적 보기 가능';
+  h+='※ 사번에 <code>육휴/출산/출휴/육단/휴직</code> 키워드 자동 감지 · 토글로 누적 보기 가능';
   h+='</div>';
   return h;
 }
