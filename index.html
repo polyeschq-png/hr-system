@@ -3020,7 +3020,7 @@ function renderTurnoverAnalysis(emps,outRecs,selCp,opts){
     var totalRate=(totalAct+totalOut)?Math.round(totalOut/(totalAct+totalOut)*1000)/10:0;
     var totalC=totalRate>=15?"#C62828":totalRate>=5?"#F57F17":"#1565C0";
     var hh='<div class="tcard" style="border-top:3px solid '+color+'">';
-    hh+='<div class="tcard-head">'+title+'<span class="meta">총 '+(totalAct+totalOut)+'명 · 퇴사 '+totalOut+'</span></div>';
+    hh+='<div class="tcard-head">'+title+'<span class="meta">총 '+(totalAct+totalOut)+'명 · 퇴사 '+totalOut+(opts.exNote?' · '+opts.exNote:'')+'</span></div>';
     hh+='<div style="overflow-x:auto;max-height:280px"><table class="ttable">';
     hh+='<thead><tr><th>구분</th><th class="r">재직</th><th class="r">퇴직</th><th class="c" style="min-width:120px">퇴사율</th></tr></thead><tbody>';
     keys.forEach(function(k){
@@ -8723,6 +8723,14 @@ function renderOvTurnover(emps,selCp){
     basisLabelView=esc(curMonth)+' '+outRecs.length+'건';
   }
 
+  // 그 외 고용형태(비정규직: 정규직·단기근로·공란 외) 제외 — 퇴사율·사유 집계 전체에서 빼고 제외 인원 표기
+  function _isExtraGubn(g){g=String(g||"").trim();return g!==""&&g!=="정규직"&&g!=="단기근로";}
+  var _exOutN=effectiveOutRecs.filter(function(r){return _isExtraGubn(r.gubn);}).length;
+  effectiveOutRecs=effectiveOutRecs.filter(function(r){return !_isExtraGubn(r.gubn);});
+  emps=emps.filter(function(e){return !_isExtraGubn(e.gubn);});
+  var _exNote=_exOutN>0?('그 외 고용형태 '+_exOutN+'명 제외'):'';
+  if(_exNote)basisLabelView+=' · '+_exNote;
+
   // ===== 토글 버튼 (컴팩트 한 줄) =====
   function tBtn(val,lbl){
     var on=view===val;
@@ -8748,7 +8756,7 @@ function renderOvTurnover(emps,selCp){
 
   // (a) 캠퍼스/직책/연봉/국적별 퇴사율 — effectiveOutRecs 사용
   // (a) 캠퍼스/직책/연봉별 (국적은 분리해서 별도 grid로)
-  var ta=renderTurnoverAnalysis(emps,effectiveOutRecs,selCp,{splitNat:true});
+  var ta=renderTurnoverAnalysis(emps,effectiveOutRecs,selCp,{splitNat:true,exNote:_exNote});
   h+=ta.main;
 
   // ===== 근속 / 사유 / 국적 3-컬럼 grid =====
