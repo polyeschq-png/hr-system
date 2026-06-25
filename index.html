@@ -2499,15 +2499,26 @@ function renderMultiMonthCompare(selCp){
   var sel=state.multiMonths.filter(function(m){return months.indexOf(m)>=0;});
 
   var h='<div style="background:#fff;border:1px solid #e0e0e0;border-top:3px solid #6A1B9A;border-radius:10px;padding:12px 14px;margin:18px 0">';
-  h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">';
   h+='<span style="font-size:11px;font-weight:800;color:#4527A0">🔀 여러 월 동시 비교</span>';
-  h+='<span style="font-size:9px;color:#888">월을 클릭해서 선택/해제 (최대 6개)</span>';
+  h+='<span style="font-size:9px;color:#888">연도별로 월(동그라미)을 클릭해 선택/해제 · 최대 6개</span>';
   h+='</div>';
-  // 월 선택 칩
-  h+='<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">';
-  months.forEach(function(m){
-    var isSel=sel.indexOf(m)>=0;
-    h+='<span onclick="toggleMultiMonth(\''+esc(m)+'\')" style="padding:3px 10px;border-radius:12px;font-size:10px;cursor:pointer;font-weight:700;border:1.5px solid '+(isSel?"#4527A0":"#ddd")+';background:'+(isSel?"#4527A0":"#fff")+';color:'+(isSel?"#fff":"#888")+'">'+esc(m)+'</span>';
+  // 연도별 줄 + 1~12월 동그라미 (데이터 있는 달만 활성) — 월이 늘어도 연도 한 줄씩 추가되고 높이 제한 스크롤
+  var byYearM={};
+  months.forEach(function(mk){var mt=mk.match(/(\d{4})년\s*(\d+)월/);if(mt)(byYearM[mt[1]]=byYearM[mt[1]]||{})[parseInt(mt[2],10)]=mk;});
+  var yrsM=Object.keys(byYearM).sort().reverse();
+  h+='<div style="max-height:122px;overflow-y:auto;border:1px solid #f0eef6;border-radius:8px;background:#FCFBFE;padding:5px 8px;margin-bottom:10px">';
+  yrsM.forEach(function(y){
+    h+='<div style="display:flex;align-items:center;gap:7px;margin:3px 0">';
+    h+='<span style="font-size:10px;font-weight:800;color:#4527A0;width:42px;flex-shrink:0">'+y+'년</span>';
+    h+='<div style="display:flex;gap:3px;flex-wrap:wrap">';
+    for(var mo=1;mo<=12;mo++){
+      var mk=byYearM[y][mo];
+      if(!mk){h+='<span style="display:inline-flex;align-items:center;justify-content:center;width:25px;height:24px;border-radius:50%;font-size:10px;color:#d7d7de;border:1px solid #f1f1f6">'+mo+'</span>';continue;}
+      var isSel=sel.indexOf(mk)>=0;
+      h+='<span onclick="toggleMultiMonth(\''+esc(mk)+'\')" title="'+esc(mk)+'" style="display:inline-flex;align-items:center;justify-content:center;width:25px;height:24px;border-radius:50%;font-size:10px;font-weight:700;cursor:pointer;border:1.5px solid '+(isSel?"#4527A0":"#cbb8e6")+';background:'+(isSel?"#4527A0":"#fff")+';color:'+(isSel?"#fff":"#6A4BA0")+'">'+mo+'</span>';
+    }
+    h+='</div></div>';
   });
   h+='</div>';
   if(sel.length<2){h+='<div style="font-size:11px;color:#aaa;padding:12px;text-align:center">월을 2개 이상 선택하세요</div></div>';return h;}
@@ -5408,51 +5419,20 @@ function renderOvTrend(selCp){
   h+='<div style="flex:1;background:'+(totalIn-totalOut>=0?"#E3F2FD":"#FFF3E0")+';border-radius:6px;padding:6px 10px"><span style="color:'+(totalIn-totalOut>=0?"#1565C0":"#E65100")+';font-weight:700">순증감:</span> <b>'+(totalIn-totalOut>=0?"+":"")+(totalIn-totalOut)+'명</b></div>';
   h+='</div></div>';
 
-  // (12b+12c) 1인당 평균 인건비 추이 + 다음 달 예상 인건비 (2-컬럼)
+  // (12b) 1인당 평균 인건비 추이 (전체 폭으로 크게)
   var avgBasePts=monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.base/d.cnt):null};});
   var avgNetPts=monthDataChart.map(function(d){return{x:d.shortLbl,y:d.cnt?Math.round(d.net/d.cnt):null};});
-  var curMD=monthData.find(function(d){return d.mk===curMonth;})||monthData[monthData.length-1];
-  var hasPredict=curMD&&curMD.cnt;
-  var curTotal=hasPredict?curMD.net:0;
-  var inoutRecsT=D().inoutRecords||[];
-  var inCntT=inoutRecsT.filter(function(r){return r.type==="입사"&&(selCp==="전체"||r.campus===selCp);}).length;
-  var outCntT=inoutRecsT.filter(function(r){return r.type==="퇴사"&&(selCp==="전체"||r.campus===selCp);}).length;
-  var raiseCntT=inoutRecsT.filter(function(r){return r.type==="인상"&&(selCp==="전체"||r.campus===selCp);}).length;
-  var avgNetT=hasPredict?Math.round(curTotal/curMD.cnt):0;
-  var raiseImpactT=hasPredict?Math.round(curTotal*0.05*raiseCntT/Math.max(curMD.cnt,1)):0;
-  var inoutImpactT=(inCntT-outCntT)*avgNetT;
-  var predictedT=curTotal+raiseImpactT+inoutImpactT;
 
-  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">';
-
-  // 좌: 1인당 평균 인건비 추이
-  h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);border-top:3px solid #00838F;padding:12px 14px">';
+  h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);border-top:3px solid #00838F;padding:12px 14px;margin-bottom:10px">';
   h+='<div style="font-size:11px;font-weight:800;color:#00838F;margin-bottom:8px">📊 1인당 평균 인건비 추이</div>';
   if(monthDataChart.length<2){h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">비교할 월이 부족합니다</div>';}
   else{
     h+=svgLine([
       {label:"평균 기본월급여",color:"#1565C0",points:avgBasePts},
       {label:"평균 실지급",color:"#2E7D32",points:avgNetPts}
-    ],340,160,{yFmt:fmtW,showLegend:true});
+    ],720,180,{yFmt:fmtW,showLegend:true});
   }
   h+='</div>';
-
-  // 우: 다음 달 예상 인건비
-  h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);border-top:3px solid #F57F17;padding:12px 14px">';
-  h+='<div style="font-size:11px;font-weight:800;color:#F57F17;margin-bottom:8px">🔮 다음 달 예상 인건비 <span style="font-size:9px;color:#888;font-weight:400">(단순 추정)</span></div>';
-  if(!hasPredict){h+='<div style="font-size:11px;color:#aaa;padding:20px 0;text-align:center">당월 데이터 없음</div>';}
-  else{
-    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">';
-    h+='<div style="background:#f8f9fa;padding:8px 10px;border-radius:6px"><div style="font-size:9px;color:#888">당월 실지급 총액</div><div style="font-size:13px;font-weight:800;color:#1a3a5c">'+fmtW(curTotal)+'</div></div>';
-    h+='<div style="background:#E3F2FD;padding:8px 10px;border-radius:6px"><div style="font-size:9px;color:#1565C0">인상 영향 ('+raiseCntT+'건)</div><div style="font-size:13px;font-weight:800;color:#1565C0">'+(raiseImpactT>=0?"+":"")+fmtW(raiseImpactT)+'</div></div>';
-    h+='<div style="background:#E8F5E9;padding:8px 10px;border-radius:6px"><div style="font-size:9px;color:#2E7D32">입퇴사 영향 (+'+inCntT+'/-'+outCntT+')</div><div style="font-size:13px;font-weight:800;color:'+(inoutImpactT>=0?"#2E7D32":"#C62828")+'">'+(inoutImpactT>=0?"+":"")+fmtW(inoutImpactT)+'</div></div>';
-    h+='<div style="background:#FFF3E0;padding:8px 10px;border-radius:6px;border:1.5px solid #FFCC80"><div style="font-size:9px;color:#E65100">예상 총액</div><div style="font-size:14px;font-weight:900;color:#E65100">'+fmtW(predictedT)+'</div></div>';
-    h+='</div>';
-    h+='<div style="font-size:9px;color:#aaa;margin-top:6px">※ 인상=건당 평균+5%, 입퇴사=월평균실지급 기준</div>';
-  }
-  h+='</div>';
-
-  h+='</div>';// 2-컬럼 grid 끝
 
   // (14) 분기별 요약 (년도 필터 적용)
   var quarters={};
