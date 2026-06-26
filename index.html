@@ -10142,10 +10142,10 @@ function renderMaternity(){
     var seenKey={};
     recs=[];
     monthKeys.forEach(function(mk){
-      (MONTHS_DATA[mk].maternityRecords||[]).forEach(function(r){
+      (MONTHS_DATA[mk].maternityRecords||[]).forEach(function(r,_oi){
         var uid=r._uid||r.name;
         var key=uid+"|"+(r.category||"")+"|"+(r.startDate||"");
-        if(!seenKey[key]){seenKey[key]=true;recs.push(Object.assign({_detectedMonth:mk},r));}
+        if(!seenKey[key]){seenKey[key]=true;recs.push(Object.assign({_detectedMonth:mk,_origIdx:_oi},r));}
       });
     });
   }
@@ -10285,7 +10285,8 @@ function renderMaternity(){
       else if(rem===0){dDay="오늘";dDayColor="#F57F17";dDayBg="#FFF8E1";}
       else{dDay="복직";dDayColor="#2E7D32";dDayBg="#E8F5E9";}
     }
-    var realIdx=recsThisMonth.indexOf(r);
+    var recMonth=r._detectedMonth||curMonth;// 누적이면 레코드가 속한 실제 월
+    var realIdx=(typeof r._origIdx==="number")?r._origIdx:recsThisMonth.indexOf(r);
     // 캠퍼스 보강 — 비어있으면 raw에서 매칭
     var displayCampus=r.campus;
     if(!displayCampus){
@@ -10312,7 +10313,7 @@ function renderMaternity(){
     h+='<td style="padding:6px 16px;vertical-align:middle;font-family:monospace;font-size:10.5px;color:#9aa0a8;white-space:nowrap">'+esc(r.endDate||"미정")+'</td>';
     h+='<td style="padding:6px 16px;vertical-align:middle;font-size:10.5px;color:#9da3ab;white-space:nowrap">'+esc(durText||"-")+'</td>';
     h+='<td style="padding:6px 16px;vertical-align:middle;white-space:nowrap"><span style="display:inline-block;padding:2px 8px;background:'+dDayBg+';color:'+dDayColor+';border-radius:5px;font-weight:700;font-size:10.5px;white-space:nowrap">'+(dDay||"-")+'</span></td>';
-    h+='<td style="padding:6px 16px;vertical-align:middle;text-align:right;white-space:nowrap"><button onclick="editMaternity('+realIdx+')" style="background:#fff;color:#5E35B1;border:1px solid #D1C4E9;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit;margin-right:2px">편집</button><button onclick="deleteMaternity('+realIdx+')" style="background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit">삭제</button></td>';
+    h+='<td style="padding:6px 16px;vertical-align:middle;text-align:right;white-space:nowrap"><button onclick="editMaternity('+realIdx+',\''+esc(recMonth)+'\')" style="background:#fff;color:#5E35B1;border:1px solid #D1C4E9;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit;margin-right:2px">편집</button><button onclick="deleteMaternity('+realIdx+',\''+esc(recMonth)+'\')" style="background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit">삭제</button></td>';
     h+='</tr>';
   });
   h+='</tbody></table></div></div>';
@@ -10337,9 +10338,11 @@ function showAddMaternity(){
   h+='<div class="modal-btns"><button class="mbtn" onclick="closeModal()">취소</button><button class="mbtn pri" onclick="doSaveMaternity()">저장</button></div>';
   document.getElementById("modalContent").innerHTML=h;document.getElementById("modalBg").classList.add("show");
 }
-function editMaternity(idx){
-  if(!D().maternityRecords)return;var r=D().maternityRecords[idx];if(!r)return;
-  _matCtx={idx:idx};
+function editMaternity(idx,month){
+  month=month||curMonth;// 누적 보기면 레코드가 속한 실제 월
+  var arr=(MONTHS_DATA[month]&&MONTHS_DATA[month].maternityRecords)||null;
+  var r=arr&&arr[idx];if(!r)return;
+  _matCtx={idx:idx,month:month};
   var h='<h2>🤱 모성보호 수정</h2>';
   h+='<div class="modal-row"><div class="field"><label>성명</label><input id="mat_name" value="'+esc(r.name)+'"></div><div class="field"><label>캠퍼스</label><select id="mat_campus">';
   DD().campuses.forEach(function(cp){h+='<option value="'+esc(cp.name)+'"'+(cp.name===r.campus?" selected":"")+'>'+esc(cp.name)+'</option>';});
@@ -10350,18 +10353,27 @@ function editMaternity(idx){
   ["육단","육휴","출산","휴직"].forEach(function(c){h+='<option value="'+c+'"'+(c===r.category?" selected":"")+'>'+c+'</option>';});
   h+='</select></div></div>';
   h+='<div class="modal-row"><div class="field"><label>시작일</label><input id="mat_start" value="'+esc(r.startDate||"")+'"></div><div class="field"><label>종료일</label><input id="mat_end" value="'+esc(r.endDate||"")+'"></div></div>';
-  h+='<div class="modal-btns"><button class="mbtn danger" onclick="deleteMaternity('+idx+');closeModal()">삭제</button><button class="mbtn" onclick="closeModal()">취소</button><button class="mbtn pri" onclick="doSaveMaternity()">저장</button></div>';
+  h+='<div class="modal-btns"><button class="mbtn danger" onclick="deleteMaternity('+idx+',\''+esc(month)+'\');closeModal()">삭제</button><button class="mbtn" onclick="closeModal()">취소</button><button class="mbtn pri" onclick="doSaveMaternity()">저장</button></div>';
   document.getElementById("modalContent").innerHTML=h;document.getElementById("modalBg").classList.add("show");
 }
 function doSaveMaternity(){
-  if(!_matCtx)return;if(!D().maternityRecords)D().maternityRecords=[];
+  if(!_matCtx)return;
+  var month=_matCtx.month||curMonth;
+  if(!MONTHS_DATA[month])return;
+  if(!MONTHS_DATA[month].maternityRecords)MONTHS_DATA[month].maternityRecords=[];
+  var arr=MONTHS_DATA[month].maternityRecords;
   var nm=document.getElementById("mat_name").value.trim();if(!nm){notify("성명 입력","warn");return;}
-  var rec={name:nm,campus:document.getElementById("mat_campus").value,grade:document.getElementById("mat_grade").value,gubn:"정규직",category:document.getElementById("mat_cat").value,startDate:document.getElementById("mat_start").value.trim(),endDate:document.getElementById("mat_end").value.trim(),_fromRaw:false};
-  if(_matCtx.idx>=0)D().maternityRecords[_matCtx.idx]=rec;
-  else D().maternityRecords.push(rec);
-  closeModal();render();notify(nm+" 모성보호 저장","ok");
+  var edited={name:nm,campus:document.getElementById("mat_campus").value,grade:document.getElementById("mat_grade").value,category:document.getElementById("mat_cat").value,startDate:document.getElementById("mat_start").value.trim(),endDate:document.getElementById("mat_end").value.trim(),_fromRaw:false};
+  if(_matCtx.idx>=0)arr[_matCtx.idx]=Object.assign({gubn:"정규직"},arr[_matCtx.idx]||{},edited);// _uid·rawName 등 보존
+  else arr.push(Object.assign({gubn:"정규직"},edited));
+  scheduleSave();closeModal();render();notify(nm+" 모성보호 저장","ok");
 }
-function deleteMaternity(idx){if(!D().maternityRecords)return;if(!confirm("삭제?"))return;D().maternityRecords.splice(idx,1);render();notify("삭제","warn");}
+function deleteMaternity(idx,month){
+  month=month||curMonth;
+  var arr=MONTHS_DATA[month]&&MONTHS_DATA[month].maternityRecords;
+  if(!arr||!arr[idx])return;if(!confirm("삭제?"))return;
+  arr.splice(idx,1);scheduleSave();render();notify("삭제","warn");
+}
 function exportMaternityCSV(){
   var recs=D().maternityRecords||[];if(!recs.length){notify("데이터 없음","warn");return;}
   var rows=[["성명","캠퍼스","직책","구분","종류","시작일","종료일","사번/비고"]];
