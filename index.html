@@ -10143,8 +10143,10 @@ function renderMaternity(){
     recs=[];
     monthKeys.forEach(function(mk){
       (MONTHS_DATA[mk].maternityRecords||[]).forEach(function(r,_oi){
-        var uid=r._uid||r.name;
-        var key=uid+"|"+(r.category||"")+"|"+(r.startDate||"");
+        // 같은 휴가 판단은 _uid 유무에 의존하지 않게: 이름+캠퍼스+종류+시작일+종료일이 같으면 동일 건으로 합침
+        //   (한 쪽은 _uid 있고 다른 쪽은 없어서 같은 육휴가 2번 뜨던 문제 방지. 캠퍼스·정확한 기간까지 봐서 동명이인/다른 기간은 안 합쳐짐)
+        var pid=String(r.name||r._uid||"").trim();
+        var key=pid+"|"+(r.campus||"")+"|"+(r.category||"")+"|"+(r.startDate||"")+"|"+(r.endDate||"");
         if(!seenKey[key]){seenKey[key]=true;recs.push(Object.assign({_detectedMonth:mk,_origIdx:_oi},r));}
       });
     });
@@ -10176,6 +10178,19 @@ function renderMaternity(){
       if(pick){r.startDate=pick.start;if(!r.endDate)r.endDate=pick.end;r._inherited=true;}
     });
   })();
+
+  // 기간 이어받기로 빈 날짜가 채워진 뒤 2차 중복 제거 — 빈 날짜 레코드가 채워지면서 옆 레코드와 똑같아지는 경우(같은 사람·같은 육휴가 2번 뜨던 문제)
+  //   진짜 날짜를 원래 갖고 있던(이어받지 않은) 레코드를 남겨서, 편집 시 올바른 달이 잡히게 함
+  if(matView!=="monthly"){
+    var _seen2={},_out2=[];
+    recs.forEach(function(r){
+      var _pid=String(r.name||r._uid||"").trim();
+      var _k2=_pid+"|"+(r.campus||"")+"|"+(r.category||"")+"|"+(r.startDate||"")+"|"+(r.endDate||"");
+      if(_seen2[_k2]===undefined){_seen2[_k2]=_out2.length;_out2.push(r);}
+      else if(r._inherited!==true&&_out2[_seen2[_k2]]&&_out2[_seen2[_k2]]._inherited===true){_out2[_seen2[_k2]]=r;}
+    });
+    recs=_out2;
+  }
 
   var catC={"육단":"#E91E63","육휴":"#9C27B0","출산":"#FF5722","휴직":"#607D8B"};
   var selCp=state.matCampus||"전체";
