@@ -6972,13 +6972,18 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     if(!isMat&&rec.name)isMat=/(육단|육휴|출산|출휴|휴직|모성)/.test(rec.name);
     if(isMat){
       var parsed=parseRawName(rec.name||"");
-      var dates=parseMaternityDates(parsed.suffix||rec.name);
-      // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
-      var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
       var matName=parsed.name||rec.name;
-      var _exIdx=-1;for(var _mi=0;_mi<target.maternityRecords.length;_mi++){if(target.maternityRecords[_mi].name===matName){_exIdx=_mi;break;}}
-      if(_exIdx<0){target.maternityRecords.push({name:matName,_uid:rec._uid,campus:rec.campus||"",grade:rec.grade||"",gubn:rec.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:rec.name,empId:empIdStr,_fromRaw:true,_uploadedAt:now});maternityCnt++;}
-      else{var _exM=target.maternityRecords[_exIdx];if((!_exM.category||_exM.category==="휴직")&&cat!=="휴직"){_exM.category=cat;if(!_exM.empId)_exM.empId=empIdStr;maternityCnt++;}}
+      // 복직/전환 = 휴직 종료(복귀) → 자동 생성된 모성보호 레코드 제거하고 스킵 (휴직 종류가 같이 적혀있으면 유지)
+      if(/복직|전환/.test(empIdStr+" "+(rec.gubn||""))&&!/육휴|출산|출휴|육단|휴직/.test(empIdStr+" "+(rec.gubn||"")+" "+(rec.name||""))){
+        target.maternityRecords=target.maternityRecords.filter(function(mm){return !(mm.name===matName&&mm._fromRaw);});
+      }else{
+        var dates=parseMaternityDates(parsed.suffix||rec.name);
+        // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
+        var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
+        var _exIdx=-1;for(var _mi=0;_mi<target.maternityRecords.length;_mi++){if(target.maternityRecords[_mi].name===matName){_exIdx=_mi;break;}}
+        if(_exIdx<0){target.maternityRecords.push({name:matName,_uid:rec._uid,campus:rec.campus||"",grade:rec.grade||"",gubn:rec.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:rec.name,empId:empIdStr,_fromRaw:true,_uploadedAt:now});maternityCnt++;}
+        else{var _exM=target.maternityRecords[_exIdx];if((!_exM.category||_exM.category==="휴직")&&cat!=="휴직"){_exM.category=cat;if(!_exM.empId)_exM.empId=empIdStr;maternityCnt++;}}
+      }
     }
   });
   return{added:addedCnt,updated:updatedCnt,removed:removedCnt,inout:inoutCnt,maternity:maternityCnt};
@@ -10111,6 +10116,11 @@ function renderMaternity(){
     if(!isMat&&r.name)isMat=/(육단|육휴|출산|출휴|휴직)/.test(r.name);
     if(!isMat)return;
     var parsed=parseRawName(r.name||"");var matName=parsed.name||r.name;
+    // 복직/전환 = 휴직 종료(복귀) → 이 달엔 모성보호 대상 아님. 자동 생성된 레코드 제거하고 스킵
+    if(/복직|전환/.test(empIdStr)&&!/육휴|출산|출휴|육단|휴직/.test(empIdStr+" "+(r.name||""))){
+      for(var _ri=recsThisMonth.length-1;_ri>=0;_ri--){if(recsThisMonth[_ri].name===matName&&recsThisMonth[_ri]._fromRaw)recsThisMonth.splice(_ri,1);}
+      return;
+    }
     var already=recsThisMonth.some(function(m){return m.name===matName;});
     if(!already){
       var dates=parseMaternityDates(parsed.suffix||r.name);
@@ -10140,6 +10150,33 @@ function renderMaternity(){
     });
   }
 
+  // 기간 미정(시작일 빈) 레코드 → 같은 사람·같은 종류의 다른 달 기간으로 이어받기
+  //   종류(category)가 같아야만 채움 → 출산↔육휴 등 다른 휴가는 섞이지 않음. 그 달을 포함하는 기간 우선, 없으면 가장 가까운 달.
+  (function(){
+    var _pool={};
+    Object.keys(MONTHS_DATA).forEach(function(_mk){
+      (MONTHS_DATA[_mk].maternityRecords||[]).forEach(function(_r){
+        if(!_r.startDate)return;
+        var _k=(_r.name||"")+"|"+(_r.category||"");
+        (_pool[_k]=_pool[_k]||[]).push({mk:_mk,start:_r.startDate,end:_r.endDate});
+      });
+    });
+    function _ymv(s){var t=String(s).match(/(\d{4})\D*(\d{1,2})/);return t?parseInt(t[1])*12+parseInt(t[2]):0;}
+    recs.forEach(function(r){
+      if(r.startDate)return;
+      var cands=_pool[(r.name||"")+"|"+(r.category||"")];
+      if(!cands||!cands.length)return;
+      var recM=_ymv(r._detectedMonth||curMonth),pick=null,bestCover=1e9,pickAny=null,bestAny=1e9;
+      cands.forEach(function(c){
+        var sM=_ymv(c.start),eM=c.end?_ymv(c.end):999999,d=Math.abs(_ymv(c.mk)-recM);
+        if(recM>=sM&&recM<=eM){if(d<bestCover){bestCover=d;pick=c;}}
+        if(d<bestAny){bestAny=d;pickAny=c;}
+      });
+      if(!pick)pick=pickAny;
+      if(pick){r.startDate=pick.start;if(!r.endDate)r.endDate=pick.end;r._inherited=true;}
+    });
+  })();
+
   var catC={"육단":"#E91E63","육휴":"#9C27B0","출산":"#FF5722","휴직":"#607D8B"};
   var selCp=state.matCampus||"전체";
   var selCat=state.matCatFilter||"all";
@@ -10151,6 +10188,24 @@ function renderMaternity(){
   if(selCat!=="all")filtered=filtered.filter(function(r){return r.category===selCat;});
   var matq=(state.matSearch||"").trim().toLowerCase();
   if(matq)filtered=filtered.filter(function(r){return String(r.name||"").toLowerCase().indexOf(matq)>=0;});
+
+  // 누적 보기: 같은 사람 레코드를 붙이고(그 사람 첫 사용시점 순으로 사람 정렬), 사람 내부는 사용순(시간순)
+  if(matView!=="monthly"){
+    var _pk=function(r){return r._uid||r.name||"";};
+    var _ord=function(r){
+      var s=String(r.startDate||"").replace(/[^0-9]/g,"");
+      if(s.length>=8)return s.slice(0,8);
+      var m=String(r._detectedMonth||"").match(/(\d{4})\D*(\d{1,2})/);
+      return m?(m[1]+("0"+m[2]).slice(-2)+"00"):"99999999";
+    };
+    var _firstByP={};
+    filtered.forEach(function(r){var k=_pk(r),o=_ord(r);if(_firstByP[k]===undefined||o<_firstByP[k])_firstByP[k]=o;});
+    filtered.sort(function(a,b){
+      var ka=_pk(a),kb=_pk(b);
+      if(ka!==kb){var fa=_firstByP[ka],fb=_firstByP[kb];if(fa!==fb)return fa<fb?-1:1;return ka<kb?-1:1;}
+      var oa=_ord(a),ob=_ord(b);return oa<ob?-1:(oa>ob?1:0);
+    });
+  }
 
   // 분류 카운트 (필터 전 기준)
   var catCnt={};
