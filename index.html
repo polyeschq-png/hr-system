@@ -2986,6 +2986,16 @@ function renderTurnoverAnalysis(emps,outRecs,selCp,opts){
       var rr=(D().rawRecords||[]).find(function(x){return x.name===r.name;});
       bp=(rr&&(rr.monthlyBasePay||rr.basePay))||0;
     }
+    if(!bp){
+      // 퇴사자는 현재월 raw에 없음 → 전체 월 raw에서 마지막 급여 찾기 (getNat과 동일 방식, 정규직은 계약 고정급이라 안전)
+      //   _uid 있으면 uid로만 매칭(동명이인 오매칭 방지), 없으면 이름으로
+      Object.keys(MONTHS_DATA).forEach(function(mk){
+        (MONTHS_DATA[mk].rawRecords||[]).forEach(function(x){
+          var hit=r._uid?(x._uid===r._uid):(x.name===r.name);
+          if(hit){var v=x.monthlyBasePay||x.basePay||0;if(v)bp=v;}
+        });
+      });
+    }
     var b=salaryBand(bp);
     if(!bySalary[b])bySalary[b]={act:0,out:0};
     bySalary[b].out++;
@@ -8680,6 +8690,7 @@ function renderOvTurnover(emps,selCp){
   // retiredArr 형태(GLOBAL_RETIRED_EMPLOYEES) → outRecs 호환 형식 변환
   function retiredToOutRec(r){
     return{
+      _uid:r._uid||"",// 연봉 폴백 등에서 uid 매칭용 (동명이인 오매칭 방지)
       name:r.name,
       date:r.leaveDate,
       campus:r.campus,
@@ -8701,21 +8712,26 @@ function renderOvTurnover(emps,selCp){
       return r.leaveDate&&String(r.leaveDate).indexOf(curYear+"-")===0;
     });
     effectiveOutRecs=yearRetired.map(retiredToOutRec);
-    basisLabelView=curYear+'년 누적 '+effectiveOutRecs.length+'명';
+    basisLabelView=curYear+'년 누적';
   }else if(view==="all"){
     effectiveOutRecs=retiredFiltered.map(retiredToOutRec);
-    basisLabelView='전 기간 누적 '+effectiveOutRecs.length+'명';
+    basisLabelView='전 기간 누적';
   }else{// monthly
     effectiveOutRecs=outRecs;
-    basisLabelView=esc(curMonth)+' '+outRecs.length+'건';
+    basisLabelView=esc(curMonth);
   }
 
-  // 그 외 고용형태(비정규직: 정규직·단기근로·공란 외) 제외 — 퇴사율·사유 집계 전체에서 빼고 제외 인원 표기
-  function _isExtraGubn(g){g=String(g||"").trim();return g!==""&&g!=="정규직"&&g!=="단기근로";}
-  var _exOutN=effectiveOutRecs.filter(function(r){return _isExtraGubn(r.gubn);}).length;
-  effectiveOutRecs=effectiveOutRecs.filter(function(r){return !_isExtraGubn(r.gubn);});
-  emps=emps.filter(function(e){return !_isExtraGubn(e.gubn);});
-  var _exNote=_exOutN>0?('그 외 고용형태 '+_exOutN+'명 제외'):'';
+  // 퇴사율 전 축(캠퍼스·직책·연봉·국적) 정규직 기준 통일 — 분자·분모 모두 정규직만 (gubn 빈값은 정규직으로 간주: 미기재 누락 방지)
+  //   제외 인원은 단기근로/그 외로 나눠 제목 옆에 표기
+  function _gubnKind(g){g=String(g||"").trim();if(g===""||g==="정규직")return"reg";if(g==="단기근로")return"short";return"etc";}
+  var _exShortN=0,_exEtcN=0;
+  effectiveOutRecs=effectiveOutRecs.filter(function(r){var k=_gubnKind(r.gubn);if(k==="short")_exShortN++;else if(k==="etc")_exEtcN++;return k==="reg";});
+  emps=emps.filter(function(e){return _gubnKind(e.gubn)==="reg";});
+  basisLabelView+=' · 퇴사 '+effectiveOutRecs.length+'명';
+  var _exParts=[];
+  if(_exShortN>0)_exParts.push('단기근로 '+_exShortN+'명');
+  if(_exEtcN>0)_exParts.push('그 외 고용형태 '+_exEtcN+'명');
+  var _exNote=_exParts.length?(_exParts.join('·')+' 제외'):'';
   if(_exNote)basisLabelView+=' · '+_exNote;
 
   // ===== 토글 버튼 (컴팩트 한 줄) =====
@@ -10622,6 +10638,7 @@ function runIntegrityCheck(){
 }
 
 function renderIntegrityBanner(){
+  return"";// [발표용 임시 숨김] 데이터 무결성 배너 감춤 — 발표 후 이 줄만 삭제하면 원래대로 복구됨
   if(!INTEGRITY_ISSUES.length)return"";
   return'<div style="background:#FFEBEE;border:1.5px solid #E57373;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;font-size:12px">'+
     '<span style="font-size:16px">⚠️</span>'+
