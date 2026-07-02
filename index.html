@@ -2222,18 +2222,21 @@ function svgDonut(segments,r,cx,cy){
   s+='</svg>';return s;
 }
 
+// 분석 서브탭별 캠퍼스 선택을 각자 기억 (현황/급여분석/트렌드/퇴사/직책별/기안서 독립)
+function ovCampusOf(subTab){return (state.ovCampusBy&&state.ovCampusBy[subTab])||"전체";}
+function setOvCampus(v){var st2=state.overviewSubTab||"summary";if(!state.ovCampusBy)state.ovCampusBy={};state.ovCampusBy[st2]=v;render();}
 function renderOverview(){
   var st=getStats();
   var campuses=["전체"].concat(DD().campuses.map(function(c){return c.name;}));
-  var selCp=state.overviewCampus||"전체";
   var subTab=state.overviewSubTab||"summary";
+  var selCp=ovCampusOf(subTab);
 
   // 드롭박스 + 서브탭
   var h='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">';
   // v28: 기안서 서브탭에서는 좌측 캠퍼스 리스트로 선택하므로 드롭박스 숨김
   if(subTab!=="compare"){
     h+='<label style="font-size:12px;font-weight:700;color:#1a3a5c">📍 캠퍼스:</label>';
-    h+='<select id="ov_campus" style="padding:6px 14px;border:1.5px solid #1a3a5c;border-radius:8px;font-size:13px;font-weight:700;font-family:inherit;color:#1a3a5c;background:#fff;cursor:pointer" onchange="state.overviewCampus=this.value;render()">';
+    h+='<select id="ov_campus" style="padding:6px 14px;border:1.5px solid #1a3a5c;border-radius:8px;font-size:13px;font-weight:700;font-family:inherit;color:#1a3a5c;background:#fff;cursor:pointer" onchange="setOvCampus(this.value)">';
     campuses.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===selCp?" selected":"")+'>'+esc(c)+'</option>';});
     h+='</select>';
   }
@@ -2443,7 +2446,7 @@ function renderOvSummary(emps,cp,cc,st,selCp){
       var ccc=CAMPUS_C[cpi.name]||{hd:"#555"};
       var cnt=0,base=0,net=0;cpi.teams.forEach(function(t){cnt+=(t.employees||[]).length;(t.employees||[]).forEach(function(e){base+=getEmpPayForAvg(e,cpi.name);net+=e.netPay||0;});});
       var outCnt=(D().inoutRecords||[]).filter(function(r){return r.type==="퇴사"&&r.campus===cpi.name;}).length;
-      h+='<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e0e0e0;border-left:4px solid '+ccc.hd+';cursor:pointer" onclick="state.overviewCampus=\''+esc(cpi.name)+'\';render()">';
+      h+='<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e0e0e0;border-left:4px solid '+ccc.hd+';cursor:pointer" onclick="setOvCampus(\''+esc(cpi.name)+'\')">';
       h+='<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:800;color:'+ccc.hd+'">'+esc(cpi.name)+'</span><span style="font-size:20px;font-weight:900;color:'+ccc.hd+'">'+cnt+'명</span></div>';
       h+='<div style="font-size:10px;color:#888;margin-top:4px">지급합계 '+fmtW(base)+' · 차인지급액 '+fmtW(net)+'</div>';
       if(outCnt)h+='<div style="font-size:9px;color:#C62828;margin-top:2px">당월 퇴사 '+outCnt+'명</div>';
@@ -4633,7 +4636,7 @@ function saveGradePayEdit(uid){
 }
 
 function exportGradePayCSV(){
-  var selCp=state.overviewCampus||"전체";
+  var selCp=ovCampusOf("salaryDetail");
   var emps=getAllEmployees();
   if(selCp!=="전체")emps=emps.filter(function(e){return e.campus===selCp;});
   emps=emps.filter(function(e){return String(e.gubn||"").trim()==="정규직"&&String(e.empId||"").indexOf("퇴사")<0;});
@@ -5094,7 +5097,7 @@ function updateGpRow(uid){
 }
 
 function exportDraftOverviewCSV(){
-  var selCp=state.overviewCampus||"전체";
+  var selCp=ovCampusOf("compare");
   var io=(D().inoutRecords||[]).filter(function(r){return r.type==="입사"||r.type==="퇴사"||r.type==="인상"||r.type==="수당";});
   var al=(D().rawRecords||[]).filter(function(r){return String(r.empId||"").indexOf("수당")>=0;});
   var ma=(D().maternityRecords||[]);
@@ -5191,7 +5194,7 @@ function renderDraftInOverview(selCp){
 
   // 전체 보기 행
   var isAllSel=selCp==="전체";
-  h+='<tr style="border-bottom:1px solid #F2F2F4;background:'+(isAllSel?"#E3F2FD":"#fff")+';cursor:pointer;font-weight:700" onclick="state.overviewCampus=\'전체\';render()" onmouseover="if(!this.classList.contains(\'sel\'))this.style.background=\'#f0f4ff\'" onmouseout="if(!this.classList.contains(\'sel\'))this.style.background=\''+(isAllSel?"#E3F2FD":"#fff")+'\'">';
+  h+='<tr style="border-bottom:1px solid #F2F2F4;background:'+(isAllSel?"#E3F2FD":"#fff")+';cursor:pointer;font-weight:700" onclick="setOvCampus(\'전체\')" onmouseover="if(!this.classList.contains(\'sel\'))this.style.background=\'#f0f4ff\'" onmouseout="if(!this.classList.contains(\'sel\'))this.style.background=\''+(isAllSel?"#E3F2FD":"#fff")+'\'">';
   h+='<td style="padding:5px 8px;color:#1a3a5c">전체 합계</td>';
   h+='<td style="padding:5px 6px;text-align:center">'+allNeed.length+'</td>';
   h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+allRate+'%;background:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#C62828")+'">'+allRate+'%</span></div></td>';
@@ -5209,7 +5212,7 @@ function renderDraftInOverview(selCp){
     var cc2=CAMPUS_C[cp]||{hd:"#555"};
     var isSel=selCp===cp;
     var rowBg=isSel?"#E3F2FD":(ci%2?"#fafafa":"#fff");
-    h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+rowBg+';cursor:pointer" onclick="state.overviewCampus=\''+esc(cp)+'\';render()" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\''+rowBg+'\'">';
+    h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+rowBg+';cursor:pointer" onclick="setOvCampus(\''+esc(cp)+'\')" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\''+rowBg+'\'">';
     h+='<td style="padding:5px 8px;font-weight:700;color:'+cc2.hd+';font-size:10.5px">'+esc(cp)+'</td>';
     h+='<td style="padding:5px 6px;text-align:center;font-weight:600">'+cpNeed.length+'</td>';
     h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+cpRate+'%;background:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#C62828")+'">'+cpRate+'%</span></div></td>';
