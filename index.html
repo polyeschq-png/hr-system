@@ -5238,12 +5238,15 @@ function renderDraftInOverview(selCp){
     // 전체 보기: 캠퍼스순 정렬 + 표에 캠퍼스 열 추가
     var isAllView=selCp==="전체";
     var dispItems=items;
+    var _cpZebra={};
     if(isAllView){
       var _cpo={};allCampuses.forEach(function(c,i){_cpo[c]=i;});
       dispItems=items.slice().sort(function(a,b){
         var oa=(_cpo[a.campus]!==undefined)?_cpo[a.campus]:999,ob=(_cpo[b.campus]!==undefined)?_cpo[b.campus]:999;
         return oa-ob;
       });
+      // 캠퍼스 단위 지브라 배경 (등장 순서대로 흰색/회색 번갈아)
+      var _zi=0;dispItems.forEach(function(a){if(!(a.campus in _cpZebra))_cpZebra[a.campus]=_zi++;});
     }
     // 캠퍼스 헤더 (정규직 카테고리별 미니 카운트)
     var catCounts={};
@@ -5275,7 +5278,8 @@ function renderDraftInOverview(selCp){
         if(a.cat==="퇴사"){detailColor=a.detail?"#C62828":"#bbb";}
         else if(a.cat==="입사"||a.cat==="인상"){detailColor=a.detail?"#0D47A1":"#bbb";detailWeight=a.detail?700:500;}
         var detailText=a.detail||(a.cat==="퇴사"?"(미입력)":a.cat==="입사"||a.cat==="인상"?"(메모 없음)":(a.remark||""));
-        h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+(done2?"#f9fff9":isRetire?"#fafafa":"#fff")+'">';
+        var rowBg2=isAllView?((_cpZebra[a.campus]%2)?"#f2f3f5":"#fff"):(done2?"#f9fff9":isRetire?"#fafafa":"#fff");
+        h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+rowBg2+'">';
         if(isAllView){var ccr=CAMPUS_C[a.campus]||{hd:"#555"};h+='<td style="padding:5px 10px;font-weight:700;font-size:10px;color:'+ccr.hd+';white-space:nowrap">'+esc(a.campus||"-")+'</td>';}
         h+='<td style="padding:5px 10px"><span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:'+c2+'15;color:'+c2+'">'+esc(a.cat)+'</span></td>';
         h+='<td style="padding:5px 10px;font-weight:700">'+esc(a.name)+'</td>';
