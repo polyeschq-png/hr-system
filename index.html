@@ -5196,8 +5196,12 @@ function renderDraftInOverview(selCp){
   var isAllSel=selCp==="전체";
   h+='<tr style="border-bottom:1px solid #F2F2F4;background:'+(isAllSel?"#E3F2FD":"#fff")+';cursor:pointer;font-weight:700" onclick="setOvCampus(\'전체\')" onmouseover="if(!this.classList.contains(\'sel\'))this.style.background=\'#f0f4ff\'" onmouseout="if(!this.classList.contains(\'sel\'))this.style.background=\''+(isAllSel?"#E3F2FD":"#fff")+'\'">';
   h+='<td style="padding:5px 8px;color:#1a3a5c">전체 합계</td>';
-  h+='<td style="padding:5px 6px;text-align:center">'+allNeed.length+'</td>';
-  h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+allRate+'%;background:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#C62828")+'">'+allRate+'%</span></div></td>';
+  h+='<td style="padding:5px 6px;text-align:center'+(allNeed.length?'':';color:#c0c2c7')+'">'+allNeed.length+'</td>';
+  if(!allNeed.length){
+    h+='<td style="padding:5px 6px;text-align:center"><span style="font-size:9.5px;color:#9da3ab">특이사항 없음</span></td>';
+  }else{
+    h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+allRate+'%;background:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(allRate===100?"#2E7D32":allRate>50?"#1565C0":"#C62828")+'">'+allRate+'%</span></div></td>';
+  }
   h+='</tr>';
 
   allCampuses.forEach(function(cp,ci){
@@ -5214,22 +5218,33 @@ function renderDraftInOverview(selCp){
     var rowBg=isSel?"#E3F2FD":(ci%2?"#fafafa":"#fff");
     h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+rowBg+';cursor:pointer" onclick="setOvCampus(\''+esc(cp)+'\')" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\''+rowBg+'\'">';
     h+='<td style="padding:5px 8px;font-weight:700;color:'+cc2.hd+';font-size:10.5px">'+esc(cp)+'</td>';
-    h+='<td style="padding:5px 6px;text-align:center;font-weight:600">'+cpNeed.length+'</td>';
-    h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+cpRate+'%;background:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#C62828")+'">'+cpRate+'%</span></div></td>';
+    h+='<td style="padding:5px 6px;text-align:center;font-weight:600'+(cpNeed.length?'':';color:#c0c2c7')+'">'+cpNeed.length+'</td>';
+    if(!cpNeed.length){
+      // 대상 건수 0 = 미작성이 아니라 할 게 없는 것 → 0% 대신 명시
+      h+='<td style="padding:5px 6px;text-align:center"><span style="font-size:9.5px;color:#9da3ab">특이사항 없음</span></td>';
+    }else{
+      h+='<td style="padding:5px 6px;text-align:center"><div style="display:flex;align-items:center;gap:3px;justify-content:center"><div style="width:32px;background:#f0f0f0;border-radius:3px;height:5px;overflow:hidden"><div style="width:'+cpRate+'%;background:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#E53935")+';height:100%"></div></div><span style="font-size:10px;font-weight:700;color:'+(cpRate===100?"#2E7D32":cpRate>50?"#1565C0":"#C62828")+'">'+cpRate+'%</span></div></td>';
+    }
     h+='</tr>';
   });
   h+='</tbody></table></div></div>';
 
   // ==== 우측: 선택 캠퍼스 디테일 ====
   h+='<div>';
-  if(selCp==="전체"){
-    h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);padding:80px 30px;text-align:center;color:#aaa;font-size:12px;line-height:1.8">';
-    h+='👈 좌측에서 <b style="color:#666">캠퍼스를 클릭</b>하면<br>해당 캠퍼스의 기안서 항목이 여기 보입니다';
-    h+='</div>';
-  }else if(!items.length&&!nonRegItems.length){
+  if(!items.length&&!nonRegItems.length){
     h+='<div style="padding:60px 30px;text-align:center;color:#aaa;background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);font-size:12px">'+esc(selCp)+' 캠퍼스에 데이터가 없습니다.</div>';
   }else{
     var cc3=CAMPUS_C[selCp]||{hd:"#1a3a5c"};
+    // 전체 보기: 캠퍼스순 정렬 + 표에 캠퍼스 열 추가
+    var isAllView=selCp==="전체";
+    var dispItems=items;
+    if(isAllView){
+      var _cpo={};allCampuses.forEach(function(c,i){_cpo[c]=i;});
+      dispItems=items.slice().sort(function(a,b){
+        var oa=(_cpo[a.campus]!==undefined)?_cpo[a.campus]:999,ob=(_cpo[b.campus]!==undefined)?_cpo[b.campus]:999;
+        return oa-ob;
+      });
+    }
     // 캠퍼스 헤더 (정규직 카테고리별 미니 카운트)
     var catCounts={};
     items.forEach(function(a){catCounts[a.cat]=(catCounts[a.cat]||0)+1;});
@@ -5248,11 +5263,11 @@ function renderDraftInOverview(selCp){
       h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden;margin-bottom:10px">';
       h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">';
       h+='<thead><tr style="background:#f5f5f5">';
-      ["구분","이름","직책","날짜","기안서번호","작성여부","내용"].forEach(function(c){
+      (isAllView?["캠퍼스"]:[]).concat(["구분","이름","직책","날짜","기안서번호","작성여부","내용"]).forEach(function(c){
         h+='<th style="padding:5px 10px;text-align:left;font-weight:700;color:#666;border-bottom:1.5px solid #e0e0e0;font-size:10px">'+c+'</th>';
       });
       h+='</tr></thead><tbody>';
-      items.forEach(function(a,i){
+      dispItems.forEach(function(a,i){
         var isRetire=isExemptCat(a.cat);// 퇴사·휴가휴직 = 작성여부 면제
         var done2=!isRetire&&!!(a.draftNo&&a.draftNo.trim());
         var c2=catC[a.cat]||"#888";
@@ -5261,6 +5276,7 @@ function renderDraftInOverview(selCp){
         else if(a.cat==="입사"||a.cat==="인상"){detailColor=a.detail?"#0D47A1":"#bbb";detailWeight=a.detail?700:500;}
         var detailText=a.detail||(a.cat==="퇴사"?"(미입력)":a.cat==="입사"||a.cat==="인상"?"(메모 없음)":(a.remark||""));
         h+='<tr style="border-bottom:1px solid #f5f5f5;background:'+(done2?"#f9fff9":isRetire?"#fafafa":"#fff")+'">';
+        if(isAllView){var ccr=CAMPUS_C[a.campus]||{hd:"#555"};h+='<td style="padding:5px 10px;font-weight:700;font-size:10px;color:'+ccr.hd+';white-space:nowrap">'+esc(a.campus||"-")+'</td>';}
         h+='<td style="padding:5px 10px"><span style="padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:'+c2+'15;color:'+c2+'">'+esc(a.cat)+'</span></td>';
         h+='<td style="padding:5px 10px;font-weight:700">'+esc(a.name)+'</td>';
         h+='<td style="padding:5px 10px;font-size:10px">'+esc(a.grade)+'</td>';
@@ -5288,7 +5304,7 @@ function renderDraftInOverview(selCp){
         h+='<span style="color:#555">';
         h+=arr.map(function(a){
           var g=String(a.gubn||"").trim()||"미상";
-          var details=esc(a.name)+' <span style="color:#999;font-size:9px">('+esc(g)+(a.grade?'·'+esc(a.grade):'')+')</span>';
+          var details=(isAllView&&a.campus?'<b style="color:#777">'+esc(a.campus)+'</b> ':'')+esc(a.name)+' <span style="color:#999;font-size:9px">('+esc(g)+(a.grade?'·'+esc(a.grade):'')+')</span>';
           return details;
         }).join('  ·  ');
         h+='</span></div>';
@@ -11164,6 +11180,8 @@ function applyRemoteDataV2(remote){
     Object.keys(MONTHS_DATA).forEach(function(mk){ensureMonthStructure(mk);_monthHashes[mk]=hashMonth(mk);});
     rebuildRetiredEmployees();
     if(!MONTHS_DATA[curMonth]){var ks=Object.keys(MONTHS_DATA);if(ks.length)curMonth=ks[ks.length-1];}
+    // 첫 원격 적용 시 가장 최근 월 시트로 (로컬 백업이 오래돼 최신 월이 없던 경우 대비)
+    if(!window._initialMonthPicked){window._initialMonthPicked=true;var _mks=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m];});if(_mks.length)curMonth=_mks[_mks.length-1];}
     var el=document.getElementById("gsLink");if(el)el.href=GSHEET_VIEW_URL;
     renderMonthBar();render();
   }finally{
@@ -11483,7 +11501,8 @@ function scheduleSave(){
       if(d.history)state.history=d.history;
       if(d.hiddenMonths)hiddenMonths=d.hiddenMonths;
       if(d.monthColors)monthColors=d.monthColors;
-      if(d.curMonth&&MONTHS_DATA[d.curMonth])curMonth=d.curMonth;
+      // 시작 월: 마지막 사용 월을 복원하지 않고 항상 "가장 최근 월 시트"로 (숨김 월 제외)
+      (function(){var mks=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m];});if(mks.length)curMonth=mks[mks.length-1];})();
       if(d.CAMPUS_C)Object.assign(CAMPUS_C,d.CAMPUS_C);
       if(d.GRADE_C)Object.assign(GRADE_C,d.GRADE_C);
       // 전역 인사카드/퇴직 복원 (없으면 월별 데이터에서 마이그레이션)
