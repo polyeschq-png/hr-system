@@ -315,7 +315,7 @@ var CONFIG={
   SCHEMA_VERSION:2,// Firebase 스키마 (1=통째, 2=분할)
 
   // Firebase
-  FB_DEBOUNCE_MS:1000,
+  FB_DEBOUNCE_MS:300,// 변경 후 저장 시작까지 대기(ms) — 기안서 등 연속 입력 유실 방지 위해 1000→300 단축
   FB_ROOT:"polyhr",
 
   // GSheet
@@ -6059,7 +6059,25 @@ function _mkUidFromRow(row){
   var fj=String(row.firstJoin||"").replace(/[^0-9]/g,"").slice(0,8);
   var nameKey=String(row.name||"?").replace(/\(.*\)/g,"").trim().replace(/\s+/g,"").replace(/[.#$\[\]\/]/g,"");
   // 신 UID 형식: [주민 7자리]_[firstJoin]_[이름] (generateUid 와 동일)
-  if(rrn.length>=7&&fj.length===8)return rrn.slice(0,7)+"_"+fj+"_"+nameKey;
+  if(rrn.length>=7&&fj.length===8){
+    // 기존 raw uid에 스냅: 주민+이름 같고 입사일 ±1일 이내면 raw의 uid 그대로 사용
+    //   (엑셀 날짜 하루 밀림으로 같은 사람 메모가 두 이름표로 갈리는 것 원천 방지)
+    try{
+      var _raws0=(typeof D==="function")?(D().rawRecords||[]):[];
+      for(var _i0=0;_i0<_raws0.length;_i0++){
+        var _u0=_raws0[_i0]._uid;if(!_u0)continue;
+        var _m0=String(_u0).match(/^(\d{6,7})_(\d{8})_(.+)$/);
+        if(!_m0)continue;
+        if(_m0[1]!==rrn.slice(0,_m0[1].length))continue;
+        if(_m0[3]!==nameKey)continue;
+        if(_m0[2]===fj)return _u0;
+        var _dA=new Date(+fj.slice(0,4),+fj.slice(4,6)-1,+fj.slice(6,8));
+        var _dB=new Date(+_m0[2].slice(0,4),+_m0[2].slice(4,6)-1,+_m0[2].slice(6,8));
+        if(Math.abs(_dA-_dB)<=86400000)return _u0;
+      }
+    }catch(e){}
+    return rrn.slice(0,7)+"_"+fj+"_"+nameKey;
+  }
   // 폴백 1: 주민 6자리만
   if(rrn.length>=6&&fj.length===8)return rrn.slice(0,6)+"_"+fj+"_"+nameKey;
   // 폴백 2: 주민/입사일 부족(신규입사자 등) → 기존 raw에서 이름(+캠퍼스) 단일 매칭 → 그 raw의 uid 사용
@@ -6275,27 +6293,35 @@ function rebuildPayNoteFbIdx(){
   });
 }
 
+// uid 정확일치·±1일 후보를 모두 모아 "가장 최근 업로드" 메모 선택
+//   (엑셀 날짜 하루 밀림으로 같은 사람 메모가 두 uid로 갈렸을 때, 정확일치라도 옛 업로드면 최신에 밀리게)
+function _bestGlobalNoteForUid(uid){
+  if(!uid)return null;
+  var cands=[];
+  if(GLOBAL_PAY_HISTORY_NOTES[uid])cands.push({uid:uid,note:GLOBAL_PAY_HISTORY_NOTES[uid]});
+  var mm=String(uid).match(/^(.+)_(\d{8})$/);
+  if(mm){
+    var prefix=mm[1],ds=mm[2];
+    var yy=parseInt(ds.slice(0,4)),mo=parseInt(ds.slice(4,6)),dd=parseInt(ds.slice(6,8));
+    [-1,1].forEach(function(d){
+      var dt=new Date(yy,mo-1,dd+d);
+      if(isNaN(dt.getTime()))return;
+      var alt=prefix+"_"+dt.getFullYear()+String(dt.getMonth()+1).padStart(2,"0")+String(dt.getDate()).padStart(2,"0");
+      if(GLOBAL_PAY_HISTORY_NOTES[alt])cands.push({uid:alt,note:GLOBAL_PAY_HISTORY_NOTES[alt]});
+    });
+  }
+  if(!cands.length)return null;
+  cands.sort(function(a,b){return String(b.note.uploadedAt||"").localeCompare(String(a.note.uploadedAt||""));});
+  return {uid:cands[0].uid,note:cands[0].note,matchType:"primary"};
+}
+
 // 메모 조회 — Raw 행에서 메모를 찾아 반환 (없으면 null)
 function findPayHistoryNoteForRaw(rec){
   if(!rec)return null;
-  // 1차: 정식 UID
+  // 1차: 정식 UID (±1일 후보 포함, 최신 업로드 우선)
   var uid=generateUid(rec);
-  if(uid&&GLOBAL_PAY_HISTORY_NOTES[uid])return {uid:uid,note:GLOBAL_PAY_HISTORY_NOTES[uid],matchType:"primary"};
-  // 1.5차: ±1일 허용 매칭 (엑셀 → JS 변환 시 타임존 시프트로 1일 어긋난 메모 데이터 대응)
-  if(uid){
-    var mm=uid.match(/^(.+)_(\d{8})$/);
-    if(mm){
-      var prefix=mm[1],ds=mm[2];
-      var yy=parseInt(ds.slice(0,4)),mo=parseInt(ds.slice(4,6)),dd=parseInt(ds.slice(6,8));
-      var deltas=[-1,1];
-      for(var di=0;di<deltas.length;di++){
-        var dt=new Date(yy,mo-1,dd+deltas[di]);
-        if(isNaN(dt.getTime()))continue;
-        var altUid=prefix+"_"+dt.getFullYear()+String(dt.getMonth()+1).padStart(2,"0")+String(dt.getDate()).padStart(2,"0");
-        if(GLOBAL_PAY_HISTORY_NOTES[altUid])return {uid:altUid,note:GLOBAL_PAY_HISTORY_NOTES[altUid],matchType:"primary"};
-      }
-    }
-  }
+  var best=_bestGlobalNoteForUid(uid);
+  if(best)return best;
   // 인덱스 빌드
   if(!_payNoteFbIdx)rebuildPayNoteFbIdx();
   // 2차: 이름+입사일 폴백
@@ -6534,21 +6560,7 @@ function renderPayHistoryNoteTable(parsed){
 
 // UID로 메모 직접 조회 (±1일 허용 — 엑셀 변환 시프트 대응) — 개인 이력 탭에서 사용
 function findPayHistoryNoteByUid(uid){
-  if(!uid)return null;
-  if(GLOBAL_PAY_HISTORY_NOTES[uid])return {uid:uid,note:GLOBAL_PAY_HISTORY_NOTES[uid],matchType:"primary"};
-  var mm=String(uid).match(/^(.+)_(\d{8})$/);
-  if(mm){
-    var prefix=mm[1],ds=mm[2];
-    var yy=parseInt(ds.slice(0,4)),mo=parseInt(ds.slice(4,6)),dd=parseInt(ds.slice(6,8));
-    var deltas=[-1,1];
-    for(var di=0;di<deltas.length;di++){
-      var dt=new Date(yy,mo-1,dd+deltas[di]);
-      if(isNaN(dt.getTime()))continue;
-      var altUid=prefix+"_"+dt.getFullYear()+String(dt.getMonth()+1).padStart(2,"0")+String(dt.getDate()).padStart(2,"0");
-      if(GLOBAL_PAY_HISTORY_NOTES[altUid])return {uid:altUid,note:GLOBAL_PAY_HISTORY_NOTES[altUid],matchType:"primary"};
-    }
-  }
-  return null;
+  return _bestGlobalNoteForUid(uid);
 }
 
 // 메모 모달 — 급여 이력 메모 전문 표시
@@ -6957,7 +6969,12 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
   parsedRecs.forEach(function(rec){
     var ek=_emKey(rec);
     var ei=existMap[ek];
-    if(ei!==undefined){target.rawRecords[ei]=rec;updatedCnt++;}
+    if(ei!==undefined){
+      // 수기 입력 필드(기안번호·비고) 보존 — 시트 재동기화가 행을 통째로 교체하면서 날리지 않게
+      var _oldRaw=target.rawRecords[ei];
+      if(_oldRaw){if(_oldRaw.draftNo&&!rec.draftNo)rec.draftNo=_oldRaw.draftNo;if(_oldRaw.remark&&!rec.remark)rec.remark=_oldRaw.remark;}
+      target.rawRecords[ei]=rec;updatedCnt++;
+    }
     else{target.rawRecords.push(rec);addedCnt++;existMap[ek]=target.rawRecords.length-1;}
     syncEmpFromRaw(rec,targetMonth,true);
 
@@ -6967,15 +6984,14 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     var isRaise=empIdStr==="인상"||empIdStr.indexOf("인상")>=0;
     if(isIn||isOut||isInOut){
       var nameClean=parseRawName(rec.name).name||rec.name;
-      var already=target.inoutRecords.some(function(io){return io.name===nameClean&&io._fromRaw;});
-      if(!already){
-        if(isIn||isInOut){target.inoutRecords.push({type:"입사",date:rec.joinDate||targetMonth,name:nameClean,_uid:rec._uid,campus:rec.campus||"",team:rec._autoTeam||"",grade:rec.grade||"",gubn:rec.gubn||"",nationality:rec.nationality||"",basePay:rec.monthlyBasePay||rec.basePay||0,netPay:rec.netPay||0,firstJoin:rec.firstJoin||rec.joinDate||"",memo:sourceTag+" 자동반영",_fromRaw:true});inoutCnt++;}
-        if(isOut||isInOut){target.inoutRecords.push({type:"퇴사",date:rec.leaveDate||targetMonth,name:nameClean,_uid:rec._uid,campus:rec.campus||"",team:rec._autoTeam||"",grade:rec.grade||"",gubn:rec.gubn||"",nationality:rec.nationality||"",basePay:rec.monthlyBasePay||rec.basePay||0,netPay:rec.netPay||0,firstJoin:rec.firstJoin||rec.joinDate||"",memo:sourceTag+" 자동반영",_fromRaw:true});inoutCnt++;}
-      }
+      // 중복 체크: 이름+종류+캠퍼스 — 전근자(A캠퍼스 퇴사 + B캠퍼스 입사)가 이름만 같다고 걸러지던 버그 수정
+      var hasIO=function(t){return target.inoutRecords.some(function(io){return io._fromRaw&&io.type===t&&io.name===nameClean&&(io.campus||"")===(rec.campus||"");});};
+      if((isIn||isInOut)&&!hasIO("입사")){target.inoutRecords.push({type:"입사",date:rec.joinDate||targetMonth,name:nameClean,_uid:rec._uid,campus:rec.campus||"",team:rec._autoTeam||"",grade:rec.grade||"",gubn:rec.gubn||"",nationality:rec.nationality||"",basePay:rec.monthlyBasePay||rec.basePay||0,netPay:rec.netPay||0,firstJoin:rec.firstJoin||rec.joinDate||"",memo:sourceTag+" 자동반영",_fromRaw:true});inoutCnt++;}
+      if((isOut||isInOut)&&!hasIO("퇴사")){target.inoutRecords.push({type:"퇴사",date:rec.leaveDate||targetMonth,name:nameClean,_uid:rec._uid,campus:rec.campus||"",team:rec._autoTeam||"",grade:rec.grade||"",gubn:rec.gubn||"",nationality:rec.nationality||"",basePay:rec.monthlyBasePay||rec.basePay||0,netPay:rec.netPay||0,firstJoin:rec.firstJoin||rec.joinDate||"",memo:sourceTag+" 자동반영",_fromRaw:true});inoutCnt++;}
     }
     if(isRaise){
       var nameCleanR=parseRawName(rec.name).name||rec.name;
-      var alreadyRaise=target.inoutRecords.some(function(io){return io.name===nameCleanR&&io.type==="인상"&&io._fromRaw;});
+      var alreadyRaise=target.inoutRecords.some(function(io){return io.name===nameCleanR&&io.type==="인상"&&io._fromRaw&&(io.campus||"")===(rec.campus||"");});
       if(!alreadyRaise){target.inoutRecords.push({type:"인상",date:rec.joinDate||targetMonth,name:nameCleanR,_uid:rec._uid,campus:rec.campus||"",team:rec._autoTeam||"",grade:rec.grade||"",gubn:rec.gubn||"",nationality:rec.nationality||"",remark:sourceTag+" 자동반영",_fromRaw:true});inoutCnt++;}
     }
 
@@ -11430,15 +11446,24 @@ function saveLocalBackup(){
   }catch(e){console.warn("localStorage 백업 실패(용량초과 등):",e&&e.name);return false;}
 }
 
+var _saveDirty=false;// 마지막 변경이 Firebase까지 동기화됐는지 추적 (창 닫기 경고용)
+window.addEventListener("beforeunload",function(e){
+  if(_saveDirty||_isSaving){
+    try{saveLocalBackup();}catch(err){}// 닫히더라도 로컬엔 최신본 남김
+    e.preventDefault();e.returnValue="저장(동기화)이 아직 끝나지 않았습니다. 잠시 후 닫아주세요.";
+    return e.returnValue;
+  }
+});
 function scheduleSave(){
   if(FB.applyingRemote)return;
+  _saveDirty=true;
   setDot("busy","저장중...");clearTimeout(_saveTimer);
   _saveTimer=setTimeout(function(){
     if(_isSaving){scheduleSave();return;}_isSaving=true;
     invalidateTimelineCache();
     var localOk=saveLocalBackup();// ← Firebase 전에 즉시 로컬 백업(연결 끊겨도 데이터 보존)
     var done=false;
-    function finish(ok,msg){if(done)return;done=true;setDot(ok?"ok":"err",msg);_isSaving=false;}
+    function finish(ok,msg){if(done)return;done=true;setDot(ok?"ok":"err",msg);_isSaving=false;_saveDirty=!ok;}
     // 타임아웃을 먼저 등록 → push가 동기적으로 에러를 던져도(잘못된 키 등) "저장중" 무한대기 방지
     setTimeout(function(){if(!done)finish(localOk,localOk?"로컬 저장됨(동기화 대기)":"실패");},10000);
     try{
