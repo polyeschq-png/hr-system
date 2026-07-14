@@ -4354,6 +4354,16 @@ function getIncentiveCarryover(emp){
   return 0;
 }
 
+// 수기 기본월급여 적용 판단 — "시트가 움직이면 시트가 이기고, 시트가 그대로면 수기가 이긴다"
+//   수기 저장 당시의 시트값(monthlyBasePayRawAtSave)을 기억해두고, 그 후 시트값이 바뀌었으면(인상 등) 시트 우선.
+//   기록이 없는 옛 수기값은 기존처럼 수기 우선(동작 변화 없음).
+function resolveBasePay(ov,rawBase){
+  if(ov&&ov.monthlyBasePay!==undefined){
+    if(ov.monthlyBasePayRawAtSave===undefined||!rawBase||ov.monthlyBasePayRawAtSave===rawBase)return ov.monthlyBasePay;
+  }
+  return rawBase||0;
+}
+
 // 특정 월의 직원 지급합계 (override 우선, raw fallback)
 function getEmpTotalPayForMonth(emp,month){
   var md=MONTHS_DATA[month];if(!md||!md.rawRecords)return null;
@@ -4361,7 +4371,7 @@ function getEmpTotalPayForMonth(emp,month){
   if(!rec)return null;
   var uid=emp._uid||generateUid(emp);
   var ov=(md.gradePayOverrides||{})[uid]||{};
-  var base=ov.monthlyBasePay!==undefined?ov.monthlyBasePay:(rec.monthlyBasePay||rec.basePay||0);
+  var base=resolveBasePay(ov,rec.monthlyBasePay||rec.basePay||0);
   var extra=getEffectiveFixedExtra(uid,month);// 고정 기타수당(이어받기, 없으면 0)
   var house=ov.houseAllow!==undefined?ov.houseAllow:(rec.houseAllow||0);
   var total=base+extra+house;// 급여합계 자동합산(이전월도 동일 규칙)
@@ -4528,7 +4538,7 @@ function getGradePayMerged(emp){
   var uid=emp._uid||generateUid(emp);
   var ov=getGradePayOverride(uid);
   var rr=findRawForEmp(emp,D().rawRecords);
-  var base=ov.monthlyBasePay!==undefined?ov.monthlyBasePay:(emp.monthlyBasePay||emp.basePay||0);
+  var base=resolveBasePay(ov,emp.monthlyBasePay||emp.basePay||0);
   var extra=getEffectiveFixedExtra(uid,curMonth);// 고정 기타수당(이어받기, 없으면 0)
   var extraNote=getEffectiveFixedExtraNote(uid,curMonth);// 고정 기타수당 내역(무슨 수당인지)
   var house=ov.houseAllow!==undefined?ov.houseAllow:((rr&&rr.houseAllow)||0);
@@ -4577,6 +4587,14 @@ function saveGradePayEdit(uid){
   // 급여합계(totalPay)는 자동합산이므로 저장하지 않음 (기본월급여+기타수당+주택보조금)
   // prevTotalPay는 아래에서 날짜와 함께 별도 처리
   ["monthlyBasePay","houseAllow","incentive"].forEach(function(f){var v=getNum(f);if(v!==undefined&&v>0)ov[f]=v;});
+  // 기본월급여: 시트(raw) 값과 같으면 저장 안 함 — 저장 시점 값이 박제되어 이후 시트 인상이 화면에 안 보이던 문제 방지
+  //   (시트와 다르게 일부러 입력한 경우에만 수기값으로 저장됨)
+  if(ov.monthlyBasePay!==undefined){
+    var _rawRec=(md.rawRecords||[]).find(function(x){return x._uid===uid;});
+    var _rawBase=_rawRec?(_rawRec.monthlyBasePay||_rawRec.basePay||0):0;
+    if(_rawBase&&ov.monthlyBasePay===_rawBase)delete ov.monthlyBasePay;
+    else if(_rawBase)ov.monthlyBasePayRawAtSave=_rawBase;// 수기 고정 당시의 시트값 기록 — 이후 시트가 바뀌면 시트 우선(resolveBasePay)
+  }
   // 비고(금액+내역) — 고정수당처럼 이어받기. 금액 또는 내역이 직전 이어받기 값과 다르면 변동점으로 저장
   var beEl=document.getElementById("gp_"+uid+"_bigoExtra");
   var bnEl=document.getElementById("gp_"+uid+"_bigoExtraNote");
