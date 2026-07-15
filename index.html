@@ -1131,7 +1131,13 @@ function toggleAdminMode(){
     try{sessionStorage.removeItem("hr_admin_mode");}catch(e){}
     updateAdminUI();
     if(state.tab==="rawdata"||state.tab==="settings")switchTab("overview");
-    notify("관리자 모드 해제 — Raw 데이터·설정 탭 숨김","info");
+    // 보고 있던 월이 관리자 전용 월이면 최신 공개 월로 이동
+    if(isMonthAdminHidden(curMonth)){
+      var _vis=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m]&&!isMonthAdminHidden(m);});
+      if(_vis.length){curMonth=_vis[_vis.length-1];}
+    }
+    renderMonthBar();render();
+    notify("관리자 모드 해제 — Raw·설정 탭, 2025.1~2026.4월 시트 숨김","info");
     return;
   }
   var pw=prompt("관리자 비밀번호를 입력하세요");
@@ -1139,10 +1145,19 @@ function toggleAdminMode(){
   if(pw===ADMIN_PASSWORD){
     try{sessionStorage.setItem("hr_admin_mode","1");}catch(e){}
     updateAdminUI();
-    notify("관리자 모드 — Raw 데이터·설정 탭이 표시됩니다","ok");
+    renderMonthBar();
+    notify("관리자 모드 — Raw·설정 탭, 2025.1~2026.4월 시트 표시","ok");
   }else{
     notify("비밀번호가 틀렸습니다","warn");
   }
+}
+// 관리자 전용 월 시트 (아직 정리 안 된 옛 시트) — 2025년 1월 ~ 2026년 4월은 관리자 모드에서만 표시
+function isMonthAdminHidden(m){
+  if(isAdminMode())return false;
+  var ym=String(m).match(/(\d{4})년\s*(\d+)월/);
+  if(!ym)return false;
+  var v=parseInt(ym[1],10)*12+parseInt(ym[2],10);
+  return v>=(2025*12+1)&&v<=(2026*12+4);
 }
 updateAdminUI();// 로드 시 상태 반영 (같은 탭에서는 새로고침해도 유지, 창 닫으면 다시 잠김)
 function onSearch(el){
@@ -1585,7 +1600,7 @@ function doPendingPromote(){if(!_pendingCtx||_pendingCtx.idx<0)return;var t=null
 
 // ===== 월 탭 =====
 function renderMonthBar(){
-  var keys=Object.keys(MONTHS_DATA);
+  var keys=Object.keys(MONTHS_DATA).filter(function(m){return !isMonthAdminHidden(m);});// 관리자 전용 월 숨김
   // 년도별 그룹화
   var byYear={}, orderedYears=[], otherKeys=[];
   keys.forEach(function(m){
@@ -1640,7 +1655,7 @@ function toggleYearExpand(y){
   renderMonthBar();
 }
 function scrollMonths(dir){var el=document.getElementById("monthScroll");if(el)el.scrollBy({left:dir*150,behavior:"smooth"});}
-function switchMonth(m){if(hiddenMonths[m])return;curMonth=m;window._payHistDiagLogged=false;renderMonthBar();render();}
+function switchMonth(m){if(hiddenMonths[m])return;if(isMonthAdminHidden(m)){notify("관리자 모드에서만 볼 수 있는 월입니다","warn");return;}curMonth=m;window._payHistDiagLogged=false;renderMonthBar();render();}
 
 var _ctxMonth="";
 function showMonthCtx(e,m){
@@ -4607,11 +4622,16 @@ function getGradePayMerged(emp){
   var house=ov.houseAllow!==undefined?ov.houseAllow:((rr&&rr.houseAllow)||0);
   var totalAuto=base+extra+house;
   var total=totalAuto;// 급여합계는 기본월급여+기타수당(고정)+주택보조금 자동합산 — 수동 override 사용 안 함
-  // 인센티브: override > 현재월 raw > 이전월 캐리오버
+  // 인센티브: override > 현재월 raw > 같은 달 다른 캠퍼스 본인 행(전배자) > 이전월 캐리오버
   var inc;var incSrc="none";
   if(ov.incentive!==undefined){inc=ov.incentive;incSrc="override";}
   else if(rr&&rr.incentive&&rr.incentive>0){inc=rr.incentive;incSrc="raw";}
-  else{inc=getIncentiveCarryover(emp);if(inc>0)incSrc="carryover";}
+  else{
+    // 전배자: 인센티브가 출발 캠퍼스 행에 적혀 있으면 중복 제거로 그 행이 표에서 빠져 누락됨 → 같은 uid의 다른 행에서 회수
+    var rrT=(D().rawRecords||[]).find(function(x){return x._uid===uid&&x!==rr&&(x.incentive||0)>0;});
+    if(rrT){inc=rrT.incentive;incSrc="raw-transfer";}
+    else{inc=getIncentiveCarryover(emp);if(inc>0)incSrc="carryover";}
+  }
   return {monthlyBasePay:base,extraAllow:extra,extraNote:extraNote,houseAllow:house,totalPay:total,totalAuto:totalAuto,incentive:inc,_incSrc:incSrc,bigoExtra:getEffectiveBigoExtra(uid,curMonth),bigoExtraNote:getEffectiveBigoExtraNote(uid,curMonth)};
 }
 
@@ -4720,7 +4740,7 @@ function exportGradePayCSV(){
   var selCp=ovCampusOf("salaryDetail");
   var emps=getAllEmployees();
   if(selCp!=="전체")emps=emps.filter(function(e){return e.campus===selCp;});
-  emps=emps.filter(function(e){return String(e.gubn||"").trim()==="정규직"&&String(e.empId||"").indexOf("퇴사")<0;});
+  emps=gpFilterEmps(emps);// 화면과 동일 기준 (정규직·제외직책·육아기단축·전배 중복 제거)
   var selGrade=state.gradePayFilter||"전체";
   if(selGrade!=="전체")emps=emps.filter(function(e){return e.grade===selGrade;});
   if(!emps.length){notify("데이터 없음","warn");return;}
@@ -4736,9 +4756,10 @@ function exportGradePayCSV(){
   var csv=rows.map(function(r){return r.map(function(c){return'"'+String(c==null?"":c).replace(/"/g,'""')+'"';}).join(",");}).join("\n");
   var blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=curMonth+"_급여직책별.csv";a.click();URL.revokeObjectURL(url);
 }
-function renderGradePayTab(emps,selCp,cc){
-  // 정규직 + 사번에 '퇴사' 미포함 직원만
-  var GP_EXCLUDE_GRADES=["POLY안전선생님","미화","조교","셔틀기사","기사"];
+// 급여(직책별) 공통 인원 필터 — 화면과 CSV가 동일 기준을 쓰도록 분리
+//   정규직 + 퇴사 미포함 + 제외직책/육아기단축 제외 + 전배 중복 제거(출발행 제거, 최신 캠퍼스만)
+var GP_EXCLUDE_GRADES=["POLY안전선생님","미화","조교","셔틀기사","기사"];// 직책 드롭박스에서도 사용
+function gpFilterEmps(emps){
   emps=emps.filter(function(e){
     if(String(e.gubn||"").trim()!=="정규직")return false;
     if(String(e.empId||"").indexOf("퇴사")>=0)return false;
@@ -4772,6 +4793,10 @@ function renderGradePayTab(emps,selCp,cc){
       return !isOrigin;
     });
   })();
+  return emps;
+}
+function renderGradePayTab(emps,selCp,cc){
+  emps=gpFilterEmps(emps);
   // 직책 드롭박스 (캠퍼스는 부모에서 처리) — 제외 직책은 목록에서도 뺌
   var allGrades=["전체"].concat(GRADE_ORDER.filter(function(g){return GRADE_C[g]&&GP_EXCLUDE_GRADES.indexOf(g)<0;}));
   var selGrade=state.gradePayFilter||"전체";
@@ -9005,6 +9030,22 @@ function renderOvTurnover(emps,selCp){
   h+='</div>';
 
   // (c) 퇴사 사유별 집계
+  // 사유 → 대분류 (기타 제외 전부 4글자 통일. 개인사정·사업폐업 대분류 승격)
+  function _leaveReasonCat(reason){
+    reason=String(reason||"").trim();
+    if(!reason||reason==="GSheet 자동반영"||reason==="엑셀 자동반영")return "미기재";
+    if(reason==="기타")return "기타";
+    if(/자발|이직|자진/.test(reason))return "자진퇴사";
+    if(/계약만료|계약종료/.test(reason))return "계약만료";
+    if(/권고|해고/.test(reason))return "권고사직";
+    if(/폐업|폐원/.test(reason))return "사업폐업";
+    if(/개인/.test(reason))return "개인사정";
+    if(/건강|질병/.test(reason))return "건강사유";
+    if(/결혼|출산|육아|가정/.test(reason))return "가정사유";
+    if(/학업|유학|대학원|진학/.test(reason))return "학업진학";
+    if(/은퇴|정년/.test(reason))return "정년은퇴";
+    return "기타 ("+reason+")";
+  }
   var basis=effectiveOutRecs;
   h+='<div class="tcard" style="border-top:3px solid #880E4F">';
   h+='<div class="tcard-head">📋 퇴사 사유별 집계<span class="meta">'+basisLabelView+'</span></div>';
@@ -9012,21 +9053,7 @@ function renderOvTurnover(emps,selCp){
   else{
     var reasonMap={};
     basis.forEach(function(r){
-      var reason=(r.reason||r.leaveReason||"").trim();
-      if(!reason||reason==="GSheet 자동반영"||reason==="엑셀 자동반영"){
-        reasonMap["사유 미기재"]=(reasonMap["사유 미기재"]||0)+1;
-        return;
-      }
-      var cat=reason;
-      if(CONFIG.LEAVE_REASONS.indexOf(reason)>=0){cat=reason;}
-      else if(/자발|이직/.test(reason))cat="자발적 퇴사";
-      else if(/계약만료|계약종료/.test(reason))cat="계약만료";
-      else if(/권고|해고/.test(reason))cat="권고사직";
-      else if(/건강|질병/.test(reason))cat="건강 사유";
-      else if(/결혼|출산|육아|가정/.test(reason))cat="가정 사유";
-      else if(/학업|유학|대학원/.test(reason))cat="학업";
-      else if(/은퇴|정년/.test(reason))cat="은퇴";
-      else cat="기타 ("+reason+")";
+      var cat=_leaveReasonCat(r.reason||r.leaveReason);
       reasonMap[cat]=(reasonMap[cat]||0)+1;
     });
     var reasonArr=Object.keys(reasonMap).map(function(k){return{k:k,v:reasonMap[k]};}).sort(function(a,b){return b.v-a.v;});
@@ -9034,22 +9061,11 @@ function renderOvTurnover(emps,selCp){
     h+='<div style="display:flex;flex-direction:column;gap:8px;padding-top:4px">';
     reasonArr.forEach(function(r){
       var pct=Math.round(r.v/basis.length*1000)/10;
-      var color=r.k==="사유 미기재"?"#9aa0a8":r.k==="권고사직"?"#C62828":r.k==="계약만료"?"#F57F17":r.k.indexOf("기타")===0?"#757575":"#1565C0";
+      var color=r.k==="미기재"?"#9aa0a8":r.k==="권고사직"?"#C62828":r.k==="계약만료"?"#F57F17":r.k==="사업폐업"?"#6A1B9A":r.k==="개인사정"?"#00838F":r.k.indexOf("기타")===0?"#757575":"#1565C0";
       // 그 사유의 캠퍼스별 TOP 3
       var rCampusMap={};
       basis.forEach(function(o){
-        var reason=(o.reason||o.leaveReason||"").trim();
-        var cat=reason;
-        if(!reason||reason==="GSheet 자동반영"||reason==="엑셀 자동반영")cat="사유 미기재";
-        else if(CONFIG.LEAVE_REASONS.indexOf(reason)>=0)cat=reason;
-        else if(/자발|이직/.test(reason))cat="자발적 퇴사";
-        else if(/계약만료|계약종료/.test(reason))cat="계약만료";
-        else if(/권고|해고/.test(reason))cat="권고사직";
-        else if(/건강|질병/.test(reason))cat="건강 사유";
-        else if(/결혼|출산|육아|가정/.test(reason))cat="가정 사유";
-        else if(/학업|유학|대학원/.test(reason))cat="학업";
-        else if(/은퇴|정년/.test(reason))cat="은퇴";
-        else cat="기타 ("+reason+")";
+        var cat=_leaveReasonCat(o.reason||o.leaveReason);
         if(cat===r.k){var cp=o.campus||"미상";rCampusMap[cp]=(rCampusMap[cp]||0)+1;}
       });
       var rTop=Object.keys(rCampusMap).map(function(x){return{name:x,count:rCampusMap[x]};}).sort(function(a,b){return b.count-a.count;}).slice(0,3);
