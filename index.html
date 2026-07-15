@@ -75,6 +75,9 @@ body{font-family:"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif
 .search-box:focus{background:rgba(255,255,255,.25)}
 .hbtn{padding:5px 12px;border:1px solid rgba(255,255,255,.3);border-radius:8px;font-size:11px;cursor:pointer;background:transparent;color:#fff;font-family:inherit;transition:all .15s}
 .hbtn:hover{background:rgba(255,255,255,.15)}
+/* [index4 전용] 전 탭 큰 글씨 모드 — 본문 전체 15% 확대 (상하 스크롤 허용) */
+#mainContent{zoom:1.15}
+.gp-big{}/* 급여(직책별) 개별 확대는 본문 전체 확대로 대체 (이중 확대 방지) */
 .sel-banner{background:#E3F2FD;padding:7px 16px;display:none;align-items:center;gap:10px;border-bottom:2px solid #2196F3;font-size:12px}
 .sel-banner .hint{color:#2196F3;font-weight:600}
 .tabs{display:flex;background:#fff;border-bottom:1px solid #ECECEE;padding:0 16px;overflow-x:auto;flex-shrink:0}
@@ -2332,7 +2335,7 @@ function renderOverview(){
   else if(subTab==="trend"){h+=renderOvTrend(selCp);}
   else if(subTab==="org"){h+=renderOvOrg(emps,selCp);}
   else if(subTab==="turnover"){h+=renderOvTurnover(emps,selCp);}
-  else if(subTab==="salaryDetail"){h+=renderGradePayTab(emps,selCp,cc);}
+  else if(subTab==="salaryDetail"){h+='<div class="gp-big">'+renderGradePayTab(emps,selCp,cc)+'</div>';}
   else{h+=renderDraftInOverview(selCp);}
 
   // v28: 분석 탭 컴팩트 모드 — 카드 padding/margin 일괄 축소
@@ -2342,7 +2345,7 @@ function renderOverview(){
      .replace(/margin-bottom:12px/g,"margin-bottom:8px")
      .replace(/margin-bottom:14px/g,"margin-bottom:10px")
      .replace(/margin:18px 0 8px/g,"margin:12px 0 6px");
-  return '<div style="max-width:'+(subTab==="salaryDetail"?"none":"1400px")+'">'+h+'</div>';
+  return '<div>'+h+'</div>';// [index2 전용] 분석탭 전 서브탭 100% 전체화면 (1400px 제한 해제)
 }
 
 function renderOvSummary(emps,cp,cc,st,selCp){
@@ -4756,6 +4759,18 @@ function exportGradePayCSV(){
   var csv=rows.map(function(r){return r.map(function(c){return'"'+String(c==null?"":c).replace(/"/g,'""')+'"';}).join(",");}).join("\n");
   var blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=curMonth+"_급여직책별.csv";a.click();URL.revokeObjectURL(url);
 }
+// [index2 전용] 급여(직책별) 표 위쪽 좌우 스크롤바 ↔ 본 스크롤 양방향 동기화
+function initGpTopScroll(){
+  var top=document.getElementById("gpTopScroll"),main=document.getElementById("gpScrollMain");
+  if(!top||!main)return;
+  var inner=document.getElementById("gpTopScrollInner");
+  var tbl=main.querySelector("table");
+  if(inner)inner.style.width=(tbl?tbl.scrollWidth:main.scrollWidth)+"px";
+  var lock=false;
+  top.onscroll=function(){if(lock)return;lock=true;main.scrollLeft=top.scrollLeft;lock=false;};
+  main.onscroll=function(){if(lock)return;lock=true;top.scrollLeft=main.scrollLeft;lock=false;};
+}
+
 // 급여(직책별) 공통 인원 필터 — 화면과 CSV가 동일 기준을 쓰도록 분리
 //   정규직 + 퇴사 미포함 + 제외직책/육아기단축 제외 + 전배 중복 제거(출발행 제거, 최신 캠퍼스만)
 var GP_EXCLUDE_GRADES=["POLY안전선생님","미화","조교","셔틀기사","기사"];// 직책 드롭박스에서도 사용
@@ -4896,7 +4911,10 @@ function renderGradePayTab(emps,selCp,cc){
 
   h+='<div style="background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden">';
   h+='<div style="padding:8px 14px;background:#455A64;color:#fff;font-size:11px;font-weight:700">직원별 급여 상세 <span style="font-size:9px;opacity:.85;font-weight:400;margin-left:6px">(급여합계 내림차순 / 동률시 입사일 빠른 순 · 우측 [✎ 편집] 버튼 클릭)</span></div>';
-  h+='<div style="overflow-x:auto;max-height:600px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:10px;white-space:nowrap">';
+  // [index2 전용] 표 위쪽 좌우 스크롤바 — 아래 본 스크롤과 양방향 동기화
+  h+='<div id="gpTopScroll" style="overflow-x:auto;overflow-y:hidden;height:16px;background:#fafafa;border-bottom:1px solid #eee"><div id="gpTopScrollInner" style="height:1px"></div></div>';
+  h+='<div id="gpScrollMain" style="overflow-x:auto;max-height:600px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:10px;white-space:nowrap">';
+  setTimeout(initGpTopScroll,0);
   h+='<thead>';
   // 상위 그룹 헤더 (2단 헤더)
   h+='<tr style="position:sticky;top:0;z-index:5">';
