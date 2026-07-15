@@ -295,7 +295,7 @@ body.card-dragging .emp-list{pointer-events:none}
   <button class="tab" data-tab="dept" onclick="switchTab('dept')">&#128101; 캠퍼스별 편성</button>
   <button class="tab" data-tab="hrcard" onclick="switchTab('hrcard')">&#127970; 관리자 인사카드</button>
   <button class="tab" data-tab="personal" onclick="switchTab('personal')">&#128100; 개인 이력</button>
-  <button class="tab" data-tab="inout" onclick="switchTab('inout')">&#128338; 급여 특이사항</button>
+  <button class="tab" data-tab="inout" style="display:none" onclick="switchTab('inout')">&#128338; 급여 특이사항</button>
   <button class="tab" data-tab="transfer" onclick="switchTab('transfer')">&#128228; 인사 발령</button>
   <button class="tab" data-tab="maternity" onclick="switchTab('maternity')">&#128118; 모성보호</button>
   <button class="tab" data-tab="rawdata" style="display:none" onclick="switchTab('rawdata')">&#128196; Raw 데이터</button>
@@ -1116,7 +1116,7 @@ function gubnHTML(g){
 
 function notify(m,t){var e=document.getElementById("notif");e.textContent=m;e.className="notif "+(t||"info");e.style.display="block";clearTimeout(e._t);e._t=setTimeout(function(){e.style.display="none";},3000);}
 function switchTab(t){
-  if((t==="rawdata"||t==="settings")&&!isAdminMode()){notify("관리자 모드에서만 접근할 수 있습니다 (우측 상단 🔒 관리자)","warn");return;}
+  if((t==="rawdata"||t==="settings"||t==="inout")&&!isAdminMode()){notify("관리자 모드에서만 접근할 수 있습니다 (우측 상단 🔒 관리자)","warn");return;}
   state.tab=t;invalidateGpRowCache();state.gradePayEditingUid=null;window._payHistDiagLogged=false;document.querySelectorAll("#mainTabs .tab").forEach(function(b){b.classList.toggle("on",b.dataset.tab===t);});render();
 }
 
@@ -1125,7 +1125,7 @@ var ADMIN_PASSWORD="poly1234";// 관리자 모드 비밀번호 (바꾸려면 이
 function isAdminMode(){try{return sessionStorage.getItem("hr_admin_mode")==="1";}catch(e){return false;}}
 function updateAdminUI(){
   var on=isAdminMode();
-  document.querySelectorAll('#mainTabs .tab[data-tab="rawdata"],#mainTabs .tab[data-tab="settings"]').forEach(function(b){b.style.display=on?"":"none";});
+  document.querySelectorAll('#mainTabs .tab[data-tab="rawdata"],#mainTabs .tab[data-tab="settings"],#mainTabs .tab[data-tab="inout"]').forEach(function(b){b.style.display=on?"":"none";});
   var btn=document.getElementById("adminModeBtn");
   if(btn){btn.innerHTML=on?"&#128275; 관리자 &#10003;":"&#128274; 관리자";btn.style.background=on?"rgba(255,213,79,.3)":"";}
 }
@@ -1133,7 +1133,7 @@ function toggleAdminMode(){
   if(isAdminMode()){
     try{sessionStorage.removeItem("hr_admin_mode");}catch(e){}
     updateAdminUI();
-    if(state.tab==="rawdata"||state.tab==="settings")switchTab("overview");
+    if(state.tab==="rawdata"||state.tab==="settings"||state.tab==="inout")switchTab("overview");
     // 보고 있던 월이 관리자 전용 월이면 최신 공개 월로 이동
     if(isMonthAdminHidden(curMonth)){
       var _vis=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m]&&!isMonthAdminHidden(m);});
