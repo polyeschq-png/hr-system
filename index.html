@@ -11937,8 +11937,10 @@ function dzParseWorkbook(ab) {
       if (!docNo || !nm || nm === "첨부파일 참조" || nm === "본문 없음") continue;
       var draftDate = dzDate(g("기안일"));
       var occurDate = dzDate(g(kind === "입사" ? "입사일" : "변동일"));
-      // 실제 발생일(입사일·변동일) 기준으로 대상 판단 — 없으면 기안일로 대체
-      var basis = occurDate || draftDate;
+      // 기안일·발생일(입사일·변동일) 중 하나라도 기준일 이후면 대상
+      //   채용: 기안 6/29 → 입사 7/6 (선행 기안)
+      //   인상: 기안 7/23 → 변동 6/11 (소급 인상)
+      var basis = (draftDate > occurDate ? draftDate : occurDate) || draftDate || occurDate;
       if (basis && basis < DZ_MIN_DATE) continue;
       out[kind].push({
         kind: kind, docNo: docNo, name: nm, nameKey: dzNameKey(nm),
