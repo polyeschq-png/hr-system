@@ -6610,7 +6610,9 @@ function autoRaiseDetailFor(rec){
   var raws=D().rawRecords||[];
   var matchingRaw=null;
   for(var i=0;i<raws.length;i++){
-    if(raws[i].name===rec.name){
+    // uid → 이름 완전일치 → 괄호주석 제거 이름("정재형(재입사)"→"정재형") 순 매칭
+    var _hit=(rec._uid&&raws[i]._uid===rec._uid)||raws[i].name===rec.name||(parseRawName(raws[i].name||"").name===rec.name);
+    if(_hit){
       if(rec.campus&&raws[i].campus!==rec.campus)continue;
       matchingRaw=raws[i];break;
     }
@@ -6652,7 +6654,9 @@ function autoJoinDetailFor(rec){
   var raws=D().rawRecords||[];
   var matchingRaw=null;
   for(var i=0;i<raws.length;i++){
-    if(raws[i].name===rec.name){
+    // uid → 이름 완전일치 → 괄호주석 제거 이름("정재형(재입사)"→"정재형") 순 매칭
+    var _hit=(rec._uid&&raws[i]._uid===rec._uid)||raws[i].name===rec.name||(parseRawName(raws[i].name||"").name===rec.name);
+    if(_hit){
       if(rec.campus&&raws[i].campus!==rec.campus)continue;
       matchingRaw=raws[i];break;
     }
@@ -9788,20 +9792,23 @@ function detectTransfersForMonth(targetMonth){
   var curRaw=(MONTHS_DATA[targetMonth]&&MONTHS_DATA[targetMonth].rawRecords)||[];
   var prevMk=idx>0?months[idx-1]:null;
   var prevRaw=prevMk?((MONTHS_DATA[prevMk]&&MONTHS_DATA[prevMk].rawRecords)||[]):[];
+  // 사람 묶기: uid 그대로가 아니라 "주민7자리+이름" — 행마다 입사일 표기가 달라 uid가 갈려도(전근 시 흔함) 같은 사람으로 인식
+  function _personK(u){var m=String(u||"").match(/^(\d{6,7})_\d{8}_(.+)$/);return m?m[1]+"|"+m[2]:String(u||"");}
   var prevByUid={};
-  prevRaw.forEach(function(p){if(!p._uid)return;var c=prevByUid[p._uid];if(!c||(!p.leaveDate&&c.leaveDate))prevByUid[p._uid]=p;});
+  prevRaw.forEach(function(p){if(!p._uid)return;var k=_personK(p._uid);var c=prevByUid[k];if(!c||(!p.leaveDate&&c.leaveDate))prevByUid[k]=p;});
   var monthPrefix=monthKeyToDatePrefix(targetMonth);
   function nrm(s){var n=String(s||"").replace(/[.\/]/g,"-").replace(/\s/g,"");var m=n.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);return m?m[1]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[3]).slice(-2):n.slice(0,10);}
   function dayDiff(a,b){var ma=nrm(a).match(/^(\d{4})-(\d{2})-(\d{2})$/),mb=nrm(b).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!ma||!mb)return null;return Math.round((new Date(+mb[1],+mb[2]-1,+mb[3])-new Date(+ma[1],+ma[2]-1,+ma[3]))/86400000);}
 
   var byUid={};
-  curRaw.forEach(function(r){if(r._uid)(byUid[r._uid]=byUid[r._uid]||[]).push(r);});
+  curRaw.forEach(function(r){if(r._uid){var k=_personK(r._uid);(byUid[k]=byUid[k]||[]).push(r);}});
   var transfers=[];
-  Object.keys(byUid).forEach(function(uid){
-    var rows=byUid[uid];
+  Object.keys(byUid).forEach(function(pk){
+    var rows=byUid[pk];
     var name=rows[0].name;
     var curMain=rows.filter(function(x){return !x.leaveDate;}).slice(-1)[0]||rows[rows.length-1];
-    var prevMain=prevByUid[uid]||null;
+    var uid=curMain._uid;// 발령 레코드에는 현재(재직) 행의 uid 사용
+    var prevMain=prevByUid[pk]||null;
     var prevGrade=prevMain?prevMain.grade:"";
     var prevGubn=prevMain?prevMain.gubn:"";
     var gradeChanged=prevGrade&&curMain.grade&&prevGrade!==curMain.grade;
@@ -9810,10 +9817,18 @@ function detectTransfersForMonth(targetMonth){
     // 전배만 발령으로: A행 퇴사일 + 0~3일 내 입사한 재직 캠퍼스 B → A→B 전근
     // (B가 옛날부터 있던 곳 = 겸직 해제 / 겸직 시작 / 전입은 발령으로 표시하지 않음)
     if(rows.length>=2){
+      // 동명이인 안전장치: 양쪽 행에 주민번호 13자리가 모두 있으면 전체 일치해야만 같은 사람으로 인정
+      //   (사람 묶기가 주민7+이름 기준이라, 생년월일·성별·이름까지 같은 동명이인이 가짜 전근으로 엮이는 것 방지)
+      function _sameResident(a,x){
+        var ra=String(a.resident||"").replace(/[^0-9]/g,""),rx=String(x.resident||"").replace(/[^0-9]/g,"");
+        if(ra.length>=13&&rx.length>=13)return ra===rx;
+        return true;// 한쪽이라도 13자리가 없으면 기존대로 (7자리+이름 일치만으로 판단)
+      }
       rows.forEach(function(a){
         if(!a.leaveDate)return;
         var b=rows.find(function(x){
           if(x===a||x.leaveDate||!x.joinDate)return false;
+          if(!_sameResident(a,x))return false;
           var g=dayDiff(a.leaveDate,x.joinDate);// B입사 - A퇴사 (일)
           return g!==null&&g>=0&&g<=3;
         });
@@ -11806,19 +11821,57 @@ function dzNameKey(s) {
   var en = (t.match(/[A-Za-z]+/g) || []).map(function (x) { return x.toLowerCase(); }).sort().join(" ");
   return { ko: ko, en: en };
 }
-function dzNameHit(a, b) {
-  if (!a || !b) return false;
-  if (a.ko && b.ko && a.ko === b.ko) return true;
-  if (a.en && b.en && a.en === b.en) return true;
-  // 한쪽만 영문인 경우: 영문 토큰이 포함 관계면 인정
-  if (a.en && b.en) {
-    var A = a.en.split(" "), B = b.en.split(" ");
-    if (A.length && B.length) {
-      var hit = A.filter(function (x) { return B.indexOf(x) >= 0; }).length;
-      if (hit >= Math.min(A.length, B.length) && hit >= 1) return true;
+// 편집거리 (철자 오타 대응: Minaar ↔ Minnaar)
+function dzLev(a, b) {
+  a = String(a); b = String(b);
+  if (a === b) return 0;
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  var prev = [], cur = [], i, j;
+  for (j = 0; j <= b.length; j++) prev[j] = j;
+  for (i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    for (j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
     }
+    prev = cur.slice();
   }
-  return false;
+  return prev[b.length];
+}
+function dzTokenNear(x, y) {
+  if (x === y) return true;
+  var d = dzLev(x, y), lim = Math.max(x.length, y.length) >= 6 ? 2 : 1;
+  return d <= lim;
+}
+
+// 이름 유사도 점수 (0이면 후보 아님)
+//  6 = 완전일치 / 5 = 철자 유사 / 2~3 = 일부(이름만) 일치
+function dzNameScore(a, b) {
+  if (!a || !b) return 0;
+  if (a.ko && b.ko) {
+    if (a.ko === b.ko) return 6;
+    if (a.ko.length >= 2 && b.ko.length >= 2 && (a.ko.indexOf(b.ko) >= 0 || b.ko.indexOf(a.ko) >= 0)) return 3;
+  }
+  if (a.en && b.en) {
+    if (a.en === b.en) return 6;
+    var A = a.en.split(" "), B = b.en.split(" ");
+    var exact = 0, near = 0, used = {};
+    A.forEach(function (x) {
+      for (var i = 0; i < B.length; i++) {
+        if (used[i]) continue;
+        if (x === B[i]) { exact++; used[i] = 1; return; }
+      }
+      for (var k = 0; k < B.length; k++) {
+        if (used[k]) continue;
+        if (dzTokenNear(x, B[k])) { near++; used[k] = 1; return; }
+      }
+    });
+    var minLen = Math.min(A.length, B.length);
+    if (exact + near >= minLen && minLen > 0) return near > 0 ? 5 : 6;   // 전 토큰 매칭(오타 허용)
+    if (exact >= 1) return 2;                                             // 이름만 같고 성이 다름
+    if (near >= 1) return 2;
+  }
+  // 한글 ↔ 영문 혼용(한쪽만 있는 경우)은 판단 불가
+  return 0;
 }
 
 function dzNum(v) {
@@ -11930,8 +11983,12 @@ function dzMatch(parsed) {
     items.forEach(function (it) {
       var cands = [];
       targets.forEach(function (t) {
-        if (!dzNameHit(it.nameKey, t.nameKey)) return;
-        var sc = 0, why = [];
+        var ns = dzNameScore(it.nameKey, t.nameKey);
+        if (!ns) return;
+        var sc = ns, why = [];
+        if (ns >= 6) why.push("이름");
+        else if (ns === 5) why.push("이름(철자차)");
+        else why.push("이름일부");
         if (it.campus && t.campus) {
           if (it.campus === t.campus) { sc += 2; why.push("캠퍼스"); }
           else sc -= 1;
@@ -11953,10 +12010,13 @@ function dzMatch(parsed) {
       if (cands.length) {
         var top = cands[0], second = cands[1];
         var decisive = top.why.indexOf("금액") >= 0 || top.why.indexOf("날짜") >= 0;
-        if (cands.length === 1 || (top.score >= 4 && (!second || top.score - second.score >= 2))) {
-          status = (decisive || cands.length === 1) ? "auto" : "review";
-          pick = top.t;
-        } else { status = "review"; pick = top.t; }
+        var exactName = top.why.indexOf("이름일부") < 0;
+        var clear = !second || top.score - second.score >= 3;
+        // 이름이 온전히 맞으면 후보 1건만으로도 확정, 이름이 일부만 맞으면 금액·날짜 근거가 있어야 확정
+        if (exactName && (cands.length === 1 || (top.score >= 8 && clear))) status = "auto";
+        else if (!exactName && decisive && top.score >= 8 && clear) status = "auto";
+        else status = "review";
+        pick = top.t;
         if (top.t.draftNo && String(top.t.draftNo).trim()) status = "skip";
       }
       result[kind].push({ item: it, cands: cands, status: status, pick: pick });
