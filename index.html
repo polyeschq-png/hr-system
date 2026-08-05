@@ -7516,6 +7516,7 @@ function renderInout(){
   campuses.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===selCp?" selected":"")+'>'+esc(c)+'</option>';});
   h+='</select>';
   h+='<input id="ioSearch" value="'+esc(state.inoutSearch||"")+'" oncompositionstart="this.dataset._composing=\'1\'" oncompositionend="this.dataset._composing=\'\';safeInputUpdate(this,function(v){state.inoutSearch=v;});" oninput="safeInputUpdate(this,function(v){state.inoutSearch=v;});" placeholder="🔍 이름 검색" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-family:inherit;width:120px;margin-left:8px">';
+  h+='<button onclick="showDraftSync()" style="margin-left:auto;padding:7px 16px;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;border:1.5px solid #1565C0;background:#1565C0;color:#fff">&#128279; 기안서 연동</button>';
   h+='</div>';
   if(sub==="allowance")return h+renderAllowanceTab();
   var type=sub==="in"?"입사":sub==="out"?"퇴사":"인상";
@@ -11778,5 +11779,306 @@ setTimeout(initFirebase,200);
   // 1분마다 상태 표시 업데이트 (몇분 전 표시용)
   setInterval(updateGSheetStatus,30000);
 })();
+
+// ===== 기안서 연동 (더존 추출 엑셀 → 기안서번호 자동 입력) =====
+var DZ_MIN_DATE = "2026-07-01";   // 이 날짜 이후 기안 건만 대상 (그 이전은 수기 관리)
+var DZ_STATE = null;
+
+// 더존 부서명 → HR 캠퍼스명
+function dzCampus(dept) {
+  var d = String(dept || "").trim();
+  if (!d) return "";
+  if (d === "목동매그넷") return "매그넷";
+  if (d === "대치폴리매그넷") return "대치폴리매그넷";
+  if (/엠폴리$/.test(d)) return d.replace(/엠폴리$/, "M");   // 분당엠폴리→분당M (엠아이엘 등은 해당 없음)
+  if (d === "수지") return "";                                // 본관/별관 구분 불가 → 이름으로 판정
+  return d;
+}
+
+// 이름 정규화 → {ko: 한글만, en: 영문 토큰 정렬}
+function dzNameKey(s) {
+  var t = String(s || "")
+    .replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/[（）()]/g, " ")
+    .replace(/조교|강사|기사님|선생님|팀장님|여사님|님/g, " ")
+    .replace(/\s+/g, " ").trim();
+  var ko = (t.match(/[가-힣]+/g) || []).join("");
+  var en = (t.match(/[A-Za-z]+/g) || []).map(function (x) { return x.toLowerCase(); }).sort().join(" ");
+  return { ko: ko, en: en };
+}
+function dzNameHit(a, b) {
+  if (!a || !b) return false;
+  if (a.ko && b.ko && a.ko === b.ko) return true;
+  if (a.en && b.en && a.en === b.en) return true;
+  // 한쪽만 영문인 경우: 영문 토큰이 포함 관계면 인정
+  if (a.en && b.en) {
+    var A = a.en.split(" "), B = b.en.split(" ");
+    if (A.length && B.length) {
+      var hit = A.filter(function (x) { return B.indexOf(x) >= 0; }).length;
+      if (hit >= Math.min(A.length, B.length) && hit >= 1) return true;
+    }
+  }
+  return false;
+}
+
+function dzNum(v) {
+  if (typeof v === "number") return Math.round(v);
+  var s = String(v == null ? "" : v).replace(/[^\d]/g, "");
+  return s ? parseInt(s, 10) : null;
+}
+function dzDate(v) {
+  var s = String(v == null ? "" : v).trim();
+  var m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[0] : "";
+}
+
+// HR 인상 레코드의 급여이력 pay 항목들
+function dzPayEntries(rec) {
+  try {
+    var raws = D().rawRecords || [], mr = null;
+    for (var i = 0; i < raws.length; i++) {
+      if (raws[i].name === rec.name) {
+        if (rec.campus && raws[i].campus && raws[i].campus !== rec.campus) continue;
+        mr = raws[i]; break;
+      }
+    }
+    if (!mr) return [];
+    var nm = findPayHistoryNoteForRaw(mr);
+    if (!nm || !nm.note || !nm.note.rawText) return [];
+    return parsePayHistoryNote(nm.note.rawText).entries.filter(function (e) { return e.type === "pay" && e.amount; });
+  } catch (e) { return []; }
+}
+// 그 인상 건의 변동 후 금액 (레코드 날짜에 해당하는 것)
+function dzRaiseAmount(rec) {
+  var es = dzPayEntries(rec);
+  if (!es.length) return null;
+  var d = dzDate(rec.date);
+  for (var i = 0; i < es.length; i++) if (es[i].date === d) return es[i].amount;
+  return null;
+}
+
+function dzDayDiff(a, b) {
+  if (!a || !b) return 9999;
+  var t1 = new Date(a).getTime(), t2 = new Date(b).getTime();
+  if (isNaN(t1) || isNaN(t2)) return 9999;
+  return Math.abs(Math.round((t1 - t2) / 86400000));
+}
+
+// 엑셀 → 기안서 행 목록
+function dzParseWorkbook(ab) {
+  var wb = XLSX.read(new Uint8Array(ab), { type: "array" });
+  var out = { 인상: [], 입사: [], 수당: [] };
+  var MAP = { "급여변동기안서": "인상", "채용기안서": "입사", "수당지급요청서": "수당" };
+  wb.SheetNames.forEach(function (sn) {
+    var kind = MAP[sn]; if (!kind) return;
+    var rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: "" });
+    if (!rows.length) return;
+    var hd = rows[0].map(function (x) { return String(x).trim(); });
+    var ix = {};
+    hd.forEach(function (h, i) { ix[h] = i; });
+    for (var r = 1; r < rows.length; r++) {
+      var row = rows[r]; if (!row || !row.length) continue;
+      var g = function (k) { return ix[k] === undefined ? "" : row[ix[k]]; };
+      var docNo = String(g("문서번호") || "").trim();
+      var nm = String(g("성명") || "").trim();
+      if (!docNo || !nm || nm === "첨부파일 참조" || nm === "본문 없음") continue;
+      var draftDate = dzDate(g("기안일"));
+      if (draftDate && draftDate < DZ_MIN_DATE) continue;
+      out[kind].push({
+        kind: kind, docNo: docNo, name: nm, nameKey: dzNameKey(nm),
+        dept: String(g("기안부서") || "").trim(),
+        campus: dzCampus(g("기안부서")),
+        draftDate: draftDate,
+        date: dzDate(g(kind === "입사" ? "입사일" : "변동일")),
+        amount: kind === "인상" ? dzNum(g("변동월급")) : (kind === "입사" ? dzNum(g("급여")) : null),
+        grade: String(g("직책") || "").trim(),
+        reason: String(g("사유") || g("비고") || "").trim()
+      });
+    }
+  });
+  return out;
+}
+
+// HR 대상 레코드 수집
+function dzTargets(kind) {
+  var list = [];
+  if (kind === "수당") {
+    var raws = D().rawRecords || [];
+    raws.forEach(function (r, i) {
+      if (String(r.empId || "").indexOf("수당") < 0) return;
+      list.push({ src: "raw", idx: i, name: r.name || "", nameKey: dzNameKey(r.name), campus: r.campus || "", grade: r.grade || "", date: (r._uploadedAt || "").slice(0, 10), draftNo: r.draftNo || "", amount: null, ref: r });
+    });
+  } else {
+    var recs = D().inoutRecords || [];
+    recs.forEach(function (r, i) {
+      if (r.type !== kind) return;
+      list.push({ src: "inout", idx: i, name: r.name || "", nameKey: dzNameKey(r.name), campus: r.campus || "", grade: r.grade || "", date: dzDate(r.date), draftNo: r.draftNo || "", amount: kind === "인상" ? dzRaiseAmount(r) : null, ref: r });
+    });
+  }
+  return list;
+}
+
+// 매칭 실행
+function dzMatch(parsed) {
+  var result = { 인상: [], 입사: [], 수당: [] };
+  ["인상", "입사", "수당"].forEach(function (kind) {
+    var targets = dzTargets(kind);
+    var items = parsed[kind] || [];
+    items.forEach(function (it) {
+      var cands = [];
+      targets.forEach(function (t) {
+        if (!dzNameHit(it.nameKey, t.nameKey)) return;
+        var sc = 0, why = [];
+        if (it.campus && t.campus) {
+          if (it.campus === t.campus) { sc += 2; why.push("캠퍼스"); }
+          else sc -= 1;
+        }
+        if (kind === "인상" && it.amount && t.amount) {
+          if (it.amount === t.amount) { sc += 5; why.push("금액"); }
+          else sc -= 2;
+        }
+        if (it.date && t.date) {
+          var dd = dzDayDiff(it.date, t.date);
+          if (dd === 0) { sc += 4; why.push("날짜"); }
+          else if (dd <= 31) { sc += 1; }
+          else if (kind !== "수당") sc -= 1;
+        }
+        cands.push({ t: t, score: sc, why: why.join("+") });
+      });
+      cands.sort(function (a, b) { return b.score - a.score; });
+      var status = "none", pick = null;
+      if (cands.length) {
+        var top = cands[0], second = cands[1];
+        var decisive = top.why.indexOf("금액") >= 0 || top.why.indexOf("날짜") >= 0;
+        if (cands.length === 1 || (top.score >= 4 && (!second || top.score - second.score >= 2))) {
+          status = (decisive || cands.length === 1) ? "auto" : "review";
+          pick = top.t;
+        } else { status = "review"; pick = top.t; }
+        if (top.t.draftNo && String(top.t.draftNo).trim()) status = "skip";
+      }
+      result[kind].push({ item: it, cands: cands, status: status, pick: pick });
+    });
+  });
+  return result;
+}
+
+function dzStat(res) {
+  var s = { auto: 0, review: 0, none: 0, skip: 0 };
+  ["인상", "입사", "수당"].forEach(function (k) {
+    (res[k] || []).forEach(function (m) { s[m.status] = (s[m.status] || 0) + 1; });
+  });
+  return s;
+}
+
+// ===== UI =====
+function showDraftSync() {
+  var h = '<div style="max-width:1080px">';
+  h += '<div style="font-size:15px;font-weight:800;margin-bottom:6px">🔗 기안서 연동</div>';
+  h += '<div style="font-size:11px;color:#888;line-height:1.7;margin-bottom:12px">더존 기안서 추출기로 받은 엑셀 파일을 올리면 급여 특이사항의 <b>기안서번호</b>를 자동으로 채웁니다.<br>' + DZ_MIN_DATE + ' 이후 기안 건만 대상이며, 이미 번호가 입력된 항목은 건드리지 않습니다.</div>';
+  h += '<div style="border:2px dashed #cfd6e0;border-radius:10px;padding:22px;text-align:center;background:#fafbfc">';
+  h += '<input type="file" id="dzFile" accept=".xls,.xlsx,.csv" style="font-size:12px" onchange="dzLoadFile(this)">';
+  h += '<div style="font-size:10px;color:#aaa;margin-top:8px">결재문서추출_YYYYMMDD_YYYYMMDD.xls</div>';
+  h += '</div>';
+  h += '<div id="dzResult" style="margin-top:14px"></div>';
+  h += '<div class="modal-btns" style="margin-top:14px"><button class="mbtn" onclick="closeModal()">닫기</button></div>';
+  h += '</div>';
+  document.getElementById("modalContent").innerHTML = h;
+  document.getElementById("modalBg").classList.add("show");
+}
+
+function dzLoadFile(el) {
+  var f = el.files && el.files[0]; if (!f) return;
+  var rd = new FileReader();
+  rd.onload = function (e) {
+    try {
+      var parsed = dzParseWorkbook(e.target.result);
+      var res = dzMatch(parsed);
+      DZ_STATE = { parsed: parsed, res: res };
+      dzRenderResult();
+    } catch (err) {
+      document.getElementById("dzResult").innerHTML = '<div style="padding:16px;background:#FFEBEE;border-radius:8px;color:#C62828;font-size:12px">파일을 읽지 못했습니다: ' + esc(err.message) + '</div>';
+    }
+  };
+  rd.readAsArrayBuffer(f);
+}
+
+function dzRenderResult() {
+  if (!DZ_STATE) return;
+  var res = DZ_STATE.res, st = dzStat(res);
+  var h = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">';
+  h += '<span style="font-size:11px;background:#E8F5E9;color:#2E7D32;padding:3px 10px;border-radius:10px;font-weight:700">자동 확정 ' + st.auto + '</span>';
+  h += '<span style="font-size:11px;background:#FFF8E1;color:#F57F17;padding:3px 10px;border-radius:10px;font-weight:700">검토 필요 ' + st.review + '</span>';
+  h += '<span style="font-size:11px;background:#F5F5F5;color:#888;padding:3px 10px;border-radius:10px;font-weight:700">미매칭 ' + st.none + '</span>';
+  h += '<span style="font-size:11px;background:#ECEFF1;color:#607D8B;padding:3px 10px;border-radius:10px;font-weight:700">이미입력 ' + st.skip + '</span>';
+  h += '<button onclick="dzApply()" style="margin-left:auto;padding:8px 20px;border:0;border-radius:8px;background:#1565C0;color:#fff;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer">✓ 반영하기</button>';
+  h += '</div>';
+
+  ["인상", "입사", "수당"].forEach(function (kind) {
+    var list = res[kind] || []; if (!list.length) return;
+    var color = kind === "인상" ? "#1565C0" : kind === "입사" ? "#2E7D32" : "#F57F17";
+    h += '<div style="font-size:12px;font-weight:800;color:' + color + ';margin:12px 0 6px">' + kind + ' (' + list.length + '건)</div>';
+    h += '<div style="max-height:280px;overflow:auto;border:1px solid #ECECEE;border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:11px">';
+    h += '<thead><tr style="background:#f5f5f5"><th style="padding:6px 8px;text-align:left;font-size:10px;color:#666">기안서번호</th><th style="padding:6px 8px;text-align:left;font-size:10px;color:#666">성명</th><th style="padding:6px 8px;text-align:left;font-size:10px;color:#666">캠퍼스</th><th style="padding:6px 8px;text-align:left;font-size:10px;color:#666">날짜/금액</th><th style="padding:6px 8px;text-align:left;font-size:10px;color:#666">→ 연결 대상</th><th style="padding:6px 8px;text-align:center;font-size:10px;color:#666">상태</th></tr></thead><tbody>';
+    list.forEach(function (m, i) {
+      var it = m.item;
+      var bg = m.status === "auto" ? "#F1F8E9" : m.status === "review" ? "#FFFDE7" : m.status === "skip" ? "#FAFAFA" : "#fff";
+      h += '<tr style="border-bottom:1px solid #f5f5f5;background:' + bg + '">';
+      h += '<td style="padding:5px 8px;font-weight:700;font-size:10px">' + esc(it.docNo) + '</td>';
+      h += '<td style="padding:5px 8px;font-weight:700">' + esc(it.name) + '</td>';
+      h += '<td style="padding:5px 8px;font-size:10px">' + esc(it.dept) + (it.campus && it.campus !== it.dept ? ' <span style="color:#aaa">→' + esc(it.campus) + '</span>' : '') + '</td>';
+      h += '<td style="padding:5px 8px;font-size:10px;color:#666">' + esc(it.date || "") + (it.amount ? ' / ' + it.amount.toLocaleString() : '') + '</td>';
+      h += '<td style="padding:5px 8px">';
+      if (m.cands.length) {
+        h += '<select onchange="dzPick(\'' + kind + '\',' + i + ',this.value)" style="font-size:10px;padding:3px 6px;border:1px solid #ddd;border-radius:5px;font-family:inherit;max-width:280px">';
+        h += '<option value="-1">— 연결 안 함 —</option>';
+        m.cands.forEach(function (c, ci) {
+          var sel = m.pick === c.t ? " selected" : "";
+          h += '<option value="' + ci + '"' + sel + '>' + esc(c.t.name) + ' / ' + esc(c.t.campus || "-") + ' / ' + esc(c.t.date || "-") + (c.t.amount ? ' / ' + c.t.amount.toLocaleString() : '') + ' (' + (c.why || "이름") + ')</option>';
+        });
+        h += '</select>';
+      } else {
+        h += '<span style="font-size:10px;color:#bbb">대상 없음</span>';
+      }
+      h += '</td>';
+      var lbl = m.status === "auto" ? "✓ 자동" : m.status === "review" ? "⚠ 검토" : m.status === "skip" ? "이미입력" : "미매칭";
+      var lc = m.status === "auto" ? "#2E7D32" : m.status === "review" ? "#F57F17" : "#999";
+      h += '<td style="padding:5px 8px;text-align:center;font-size:10px;font-weight:700;color:' + lc + '">' + lbl + '</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+  });
+  document.getElementById("dzResult").innerHTML = h;
+}
+
+function dzPick(kind, i, ci) {
+  var m = DZ_STATE.res[kind][i]; if (!m) return;
+  if (ci === "-1" || ci === -1) { m.pick = null; m.status = "none"; }
+  else { m.pick = m.cands[parseInt(ci, 10)].t; m.status = "auto"; }
+  dzRenderResult();
+}
+
+function dzApply() {
+  if (!DZ_STATE) return;
+  var res = DZ_STATE.res, n = 0, byTarget = {};
+  ["인상", "입사", "수당"].forEach(function (kind) {
+    (res[kind] || []).forEach(function (m) {
+      if (!m.pick || m.status === "skip" || m.status === "none") return;
+      var k = m.pick.src + ":" + m.pick.idx;
+      if (!byTarget[k]) byTarget[k] = { t: m.pick, nos: [] };
+      if (byTarget[k].nos.indexOf(m.item.docNo) < 0) byTarget[k].nos.push(m.item.docNo);
+    });
+  });
+  pushUndo("기안서 연동");
+  Object.keys(byTarget).forEach(function (k) {
+    var e = byTarget[k], val = e.nos.join(", ");
+    if (e.t.src === "inout") { var r = D().inoutRecords; if (r && r[e.t.idx]) { r[e.t.idx].draftNo = val; n++; } }
+    else { var raws = D().rawRecords; if (raws && raws[e.t.idx]) { raws[e.t.idx].draftNo = val; n++; } }
+  });
+  scheduleSave();
+  closeModal();
+  render();
+  notify(n + "건에 기안서번호를 입력했습니다", "ok");
+}
+
 </script>
 </body></html>
