@@ -11883,13 +11883,16 @@ function dzParseWorkbook(ab) {
       var nm = String(g("성명") || "").trim();
       if (!docNo || !nm || nm === "첨부파일 참조" || nm === "본문 없음") continue;
       var draftDate = dzDate(g("기안일"));
-      if (draftDate && draftDate < DZ_MIN_DATE) continue;
+      var occurDate = dzDate(g(kind === "입사" ? "입사일" : "변동일"));
+      // 실제 발생일(입사일·변동일) 기준으로 대상 판단 — 없으면 기안일로 대체
+      var basis = occurDate || draftDate;
+      if (basis && basis < DZ_MIN_DATE) continue;
       out[kind].push({
         kind: kind, docNo: docNo, name: nm, nameKey: dzNameKey(nm),
         dept: String(g("기안부서") || "").trim(),
         campus: dzCampus(g("기안부서")),
         draftDate: draftDate,
-        date: dzDate(g(kind === "입사" ? "입사일" : "변동일")),
+        date: occurDate,
         amount: kind === "인상" ? dzNum(g("변동월급")) : (kind === "입사" ? dzNum(g("급여")) : null),
         grade: String(g("직책") || "").trim(),
         reason: String(g("사유") || g("비고") || "").trim()
