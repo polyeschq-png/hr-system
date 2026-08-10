@@ -7519,6 +7519,12 @@ function renderInout(){
   h+='<select onchange="state.inoutCampus=this.value;render()" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-weight:600;font-family:inherit;background:#fff;color:#26262b">';
   campuses.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===selCp?" selected":"")+'>'+esc(c)+'</option>';});
   h+='</select>';
+  // 관리자/비관리자 드롭박스 (모든 서브탭 공유) — 기준: MANAGER_GRADES 9개 직책
+  var selGr=state.inoutGrade||"전체";
+  h+='<span style="font-size:10px;color:#9da3ab;font-weight:600;letter-spacing:.2px;margin-left:6px">구분</span>';
+  h+='<select onchange="state.inoutGrade=this.value;render()" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-weight:600;font-family:inherit;background:#fff;color:#26262b">';
+  ["전체","관리자","비관리자"].forEach(function(g){h+='<option value="'+esc(g)+'"'+(g===selGr?" selected":"")+'>'+esc(g)+'</option>';});
+  h+='</select>';
   h+='<input id="ioSearch" value="'+esc(state.inoutSearch||"")+'" oncompositionstart="this.dataset._composing=\'1\'" oncompositionend="this.dataset._composing=\'\';safeInputUpdate(this,function(v){state.inoutSearch=v;});" oninput="safeInputUpdate(this,function(v){state.inoutSearch=v;});" placeholder="🔍 이름 검색" style="padding:6px 11px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-family:inherit;width:120px;margin-left:8px">';
   h+='<button onclick="showDraftSync()" style="margin-left:auto;padding:7px 16px;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;border:1.5px solid #1565C0;background:#1565C0;color:#fff">&#128279; 기안서 연동</button>';
   h+='</div>';
@@ -7551,6 +7557,9 @@ function renderInoutByType(type){
   var selCp=state.inoutCampus||"전체";
   var allRecs=(D().inoutRecords||[]).filter(function(r){return r.type===type;});
   if(selCp!=="전체")allRecs=allRecs.filter(function(r){return r.campus===selCp;});
+  var selGr=state.inoutGrade||"전체";
+  if(selGr==="관리자")allRecs=allRecs.filter(function(r){return isManagerGrade(r.grade);});
+  else if(selGr==="비관리자")allRecs=allRecs.filter(function(r){return !isManagerGrade(r.grade);});
   var ioq=(state.inoutSearch||"").trim().toLowerCase();
   if(ioq)allRecs=allRecs.filter(function(r){return String(r.name||"").toLowerCase().indexOf(ioq)>=0;});
   var color=isOut?"#C62828":isRaise?"#1565C0":"#2E7D32";
@@ -7673,6 +7682,9 @@ function renderAllowanceTab(){
   var selCp=state.inoutCampus||"전체";
   var allRaws2=(D().rawRecords||[]).filter(function(r){return String(r.empId||"").indexOf("수당")>=0;});
   if(selCp!=="전체")allRaws2=allRaws2.filter(function(r){return r.campus===selCp;});
+  var selGr2=state.inoutGrade||"전체";
+  if(selGr2==="관리자")allRaws2=allRaws2.filter(function(r){return isManagerGrade(r.grade);});
+  else if(selGr2==="비관리자")allRaws2=allRaws2.filter(function(r){return !isManagerGrade(r.grade);});
   // 정규직+단기근로 vs 나머지
   var raws=[],extraRaws=[];
   allRaws2.forEach(function(r){
