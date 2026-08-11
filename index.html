@@ -7251,10 +7251,10 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
       if(/복직|전환/.test(empIdStr+" "+(rec.gubn||""))&&!/육휴|출산|출휴|육단|휴직/.test(empIdStr+" "+(rec.gubn||"")+" "+(rec.name||""))){
         target.maternityRecords=target.maternityRecords.filter(function(mm){return !(mm.name===matName&&mm._fromRaw);});
       }else{
-        _matMarked[matName]=true;// 이번 시트에 휴직 표기가 있는 사람 (미러링 정리용)
         var dates=parseMaternityDates(parsed.suffix||rec.name);
         // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
         var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
+        (_matMarked[matName]=_matMarked[matName]||{})[cat]=true;// 이번 시트에 표기된 (사람, 종류) — 미러링 정리용
         // 기존 레코드 매칭: 같은 이름 + "같은 종류"만 동일 건으로 취급
         //   (출산→육휴처럼 종류가 바뀌면 새 레코드로 등록. 이름만 보고 건너뛰어 육휴가 누락되던 문제 수정)
         //   일반 '휴직' 레코드는 구체 종류(출산/육휴/육단)로 승격 대상으로 별도 추적
@@ -7288,12 +7288,14 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
   //   2단계는 이름 기준이라, 이름은 시트에 있어도 키가 다른 옛 행(같은 사람 중복 행·전출입 잔재)이
   //   계속 살아남아 지급합계가 시트보다 커지던 문제 해결. 이번 동기화로 갱신/추가된 행 + 수동(manual) 행만 남김.
   if(sourceTag==="GSheet"&&parsedRecs.length){
-    // 자동 모성 레코드 미러링 — 이번 시트에 휴직 표기가 없어진 사람의 자동 레코드 제거
-    //   (복직 표기 없이 표기만 지운 경우도 그 달부터 정상 근무로 처리. 수기 등록 레코드는 안 건드림.
-    //    지난 달들의 레코드는 각자 달에 그대로 남아 누적/이력에는 영향 없음)
+    // 자동 모성 레코드 미러링 — 이번 시트에 표기된 (사람, 종류)의 자동 레코드만 유지
+    //   · 표기가 사라진 사람 → 그 달부터 정상 근무 처리 (복직 표기 없어도)
+    //   · 출산→육휴로 표기가 바뀐 사람 → 옛 출산 레코드 제거, 육휴만 남음 (이지민 등 "아직도 출산으로 뜸" 문제)
+    //   · 수기 등록 레코드는 안 건드림. 지난 달들 레코드는 각자 달에 그대로 → 누적/이력 영향 없음
     target.maternityRecords=target.maternityRecords.filter(function(mm){
       if(!mm._fromRaw)return true;
-      return !!_matMarked[mm.name];
+      var mk=_matMarked[mm.name];
+      return !!(mk&&mk[mm.category||"휴직"]);
     });
     var _keepIdx={};
     parsedRecs.forEach(function(rec){var _k=_emKey(rec);if(existMap[_k]!==undefined)_keepIdx[existMap[_k]]=true;});
