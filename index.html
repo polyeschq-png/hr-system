@@ -4241,10 +4241,23 @@ function isOnLeaveNow(emp){
   return false;
 }
 
-// 단축근무인가 (gubn에 "단시간·육단·단축" 포함)
+// 단축근무인가 — gubn 표기 + raw의 사번(No.)·이름 괄호 표기 + 현재월 육단 레코드(날짜 없어도)까지 인정
+//   (민경욱처럼 이름 괄호에만 "(육단)"이 있고 날짜 없는 경우도 잡히게)
 function isReducedWork(emp){
   var g=String(emp.gubn||"");
-  return /단시간|육단|단축/.test(g);
+  if(/단시간|육단|단축/.test(g))return true;
+  try{
+    var rr=findRawForEmp(emp,D().rawRecords||[]);
+    if(rr&&/육단|단축/.test(String(rr.empId||"")+" "+String(rr.name||"")))return true;
+  }catch(e){}
+  var empPk=emp._uid?personKeyFromUid(emp._uid):"";
+  var recs=D().maternityRecords||[];
+  for(var i=0;i<recs.length;i++){
+    var r=recs[i];if(r.category!=="육단")continue;
+    var same=(r._uid&&empPk)?personKeyFromUid(r._uid)===empPk:r.name===emp.name;
+    if(same)return true;
+  }
+  return false;
 }
 // 텍스트(이름괄호·empId·gubn 등)에서 휴직 종류 코드 추출 — 약어/풀네임 모두. 구체적 종류 우선, 없으면 일반 휴직.
 function _matCatFromText(s){
