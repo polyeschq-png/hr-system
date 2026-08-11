@@ -5090,8 +5090,9 @@ function renderGradePayTab(emps,selCp,cc){
       h+='<button onclick="cancelGradePayEdit()" style="padding:3px 8px;background:#fff;color:#666;border:1px solid #ccc;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit">취소</button>';
       h+='</td>';
     }else{
-      h+='<td style="padding:3px 6px;text-align:center;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
+      h+='<td style="padding:3px 6px;text-align:center;white-space:nowrap;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
       h+='<button onclick="startGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 10px;background:#fff;color:#1565C0;border:1px solid #1565C0;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" onmouseover="this.style.background=\'#E3F2FD\'" onmouseout="this.style.background=\'#fff\'">✎ 편집</button>';
+      h+='<button onclick="deleteGpEmpRow(\''+esc(uid)+'\',\''+esc(e.campus||"")+'\')" title="이 행을 명단에서 삭제 (전배/승진 잔재 정리용)" style="padding:3px 7px;background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:3px" onmouseover="this.style.background=\'#FFEBEE\'" onmouseout="this.style.background=\'#fff\'">🗑</button>';
       h+='</td>';
     }
     h+='</tr>';
@@ -5234,12 +5235,34 @@ function gpRowHTML(e,isLeave,idx,editingUid,cols){
     h+='<button onclick="cancelGradePayEdit()" style="padding:3px 8px;background:#fff;color:#666;border:1px solid #ccc;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit">취소</button>';
     h+='</td>';
   }else{
-    h+='<td style="padding:3px 6px;text-align:center;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
+    h+='<td style="padding:3px 6px;text-align:center;white-space:nowrap;position:sticky;right:0;background:'+stickyBg+';z-index:3;box-shadow:-2px 0 4px -2px rgba(0,0,0,0.08)">';
     h+='<button onclick="startGradePayEdit(\''+esc(uid)+'\')" style="padding:3px 10px;background:#fff;color:#1565C0;border:1px solid #1565C0;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit" onmouseover="this.style.background=\'#E3F2FD\'" onmouseout="this.style.background=\'#fff\'">✎ 편집</button>';
+    h+='<button onclick="deleteGpEmpRow(\''+esc(uid)+'\',\''+esc(e.campus||"")+'\')" title="이 행을 명단에서 삭제 (전배/승진 잔재 정리용)" style="padding:3px 7px;background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:3px;font-size:9px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:3px" onmouseover="this.style.background=\'#FFEBEE\'" onmouseout="this.style.background=\'#fff\'">🗑</button>';
     h+='</td>';
   }
   h+='</tr>';
   return h;
+}
+// 급여(직책별) 행 수동 삭제 — 전배/승진 후 남은 옛 캠퍼스·직책 잔재 행 정리용
+//   시트에 그대로 있는 행이면 다음 동기화 때 다시 생성되므로, 그 경우엔 시트에서 지워야 함
+function deleteGpEmpRow(uid,campus){
+  var emp=null,cpName="";
+  DD().campuses.forEach(function(cp){cp.teams.forEach(function(t){(t.employees||[]).forEach(function(x){
+    if((x._uid||generateUid(x))===uid&&(!campus||(cp.name===campus)))if(!emp){emp=x;cpName=cp.name;}
+  });});});
+  if(!emp){notify("해당 행을 찾을 수 없습니다","warn");return;}
+  if(!confirm(emp.name+" ("+cpName+" · "+(emp.grade||"")+") 행을 명단에서 삭제할까요?\n\n※ 시트에 아직 있는 행이면 다음 동기화 때 다시 나타납니다."))return;
+  pushUndo("급여직책별 행 삭제");
+  DD().campuses.forEach(function(cp){
+    if(campus&&cp.name!==campus)return;
+    cp.teams.forEach(function(t){
+      t.employees=(t.employees||[]).filter(function(x){return (x._uid||generateUid(x))!==uid;});
+    });
+  });
+  invalidateGpRowCache();
+  scheduleSave();
+  render();
+  notify(emp.name+" ("+cpName+") 행 삭제","warn");
 }
 // 한 행만 다시 그리기(전체 render 회피) — 편집 진입/취소 시 사용. 못 찾으면 안전하게 전체 render.
 function updateGpRow(uid){
@@ -7124,13 +7147,20 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     });
     target.rawRecords=keptRaws;
 
-    // 직원 편성에서 제거 (sheetNames와 직접 비교)
+    // 직원 편성에서 제거 — 이름 기준 + (강화) uid·캠퍼스 기준
+    //   같은 사람이 시트에는 있지만(uid 존재) "이 캠퍼스"에는 없으면 = 전배/승진 후 남은 옛 행 → 제거
+    //   (서재원 목동→위례 전배 시 목동·부원장 잔재 행이 이름만 보고 살아남던 문제 해결)
+    var sheetKeys={};parsedRecs.forEach(function(rec){if(rec._uid)sheetKeys[rec._uid+"|"+(rec.campus||"")]=true;});
     target.deptData.campuses.forEach(function(cp){
       cp.teams.forEach(function(t){
         t.employees=(t.employees||[]).filter(function(e){
-          var shouldDelete=isSheetEmpty
-            ?e._source!=="manual"
-            :e._source==="GSheet"&&!inSheet(e.name);
+          var shouldDelete;
+          if(isSheetEmpty)shouldDelete=e._source!=="manual";
+          else if(e._source!=="GSheet")shouldDelete=false;
+          else if(!inSheet(e.name))shouldDelete=true;
+          else if(e._uid&&sheetUids[e._uid]&&!sheetKeys[e._uid+"|"+(cp.name||"")])shouldDelete=true;// 사람은 시트에 있는데 이 캠퍼스엔 없음 = 잔재
+          else shouldDelete=false;
+          if(shouldDelete)removedCnt++;
           return !shouldDelete;
         });
       });
