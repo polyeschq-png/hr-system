@@ -4686,11 +4686,18 @@ function saveGradePayEdit(uid){
   var ov={};
   // 급여합계(totalPay)는 자동합산이므로 저장하지 않음 (기본월급여+기타수당+주택보조금)
   // prevTotalPay는 아래에서 날짜와 함께 별도 처리
-  ["monthlyBasePay","houseAllow","incentive"].forEach(function(f){var v=getNum(f);if(v!==undefined&&v>0)ov[f]=v;});
+  var _rawRec=(md.rawRecords||[]).find(function(x){return x._uid===uid;});
+  ["monthlyBasePay","houseAllow","incentive"].forEach(function(f){
+    var v=getNum(f);if(v===undefined)return;
+    if(v>0){ov[f]=v;return;}
+    // 0 입력: 기본월급여는 무시(0원 월급 없음), 주택보조금·인센티브는 시트에 값이 있을 때만 "명시적 0"으로 저장
+    //   (0으로 고쳐 저장해도 시트값으로 되돌아가던 문제 수정 — Daniel Gyu 주택보조금 케이스)
+    if(f==="houseAllow"&&_rawRec&&(_rawRec.houseAllow||0)>0)ov[f]=0;
+    if(f==="incentive"&&_rawRec&&(_rawRec.incentive||0)>0)ov[f]=0;
+  });
   // 기본월급여: 시트(raw) 값과 같으면 저장 안 함 — 저장 시점 값이 박제되어 이후 시트 인상이 화면에 안 보이던 문제 방지
   //   (시트와 다르게 일부러 입력한 경우에만 수기값으로 저장됨)
   if(ov.monthlyBasePay!==undefined){
-    var _rawRec=(md.rawRecords||[]).find(function(x){return x._uid===uid;});
     var _rawBase=_rawRec?(_rawRec.monthlyBasePay||_rawRec.basePay||0):0;
     if(_rawBase&&ov.monthlyBasePay===_rawBase)delete ov.monthlyBasePay;
     else if(_rawBase)ov.monthlyBasePayRawAtSave=_rawBase;// 수기 고정 당시의 시트값 기록 — 이후 시트가 바뀌면 시트 우선(resolveBasePay)
