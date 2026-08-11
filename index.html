@@ -7232,9 +7232,31 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
         var dates=parseMaternityDates(parsed.suffix||rec.name);
         // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
         var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
-        var _exIdx=-1;for(var _mi=0;_mi<target.maternityRecords.length;_mi++){if(target.maternityRecords[_mi].name===matName){_exIdx=_mi;break;}}
+        // 기존 레코드 매칭: 같은 이름 + "같은 종류"만 동일 건으로 취급
+        //   (출산→육휴처럼 종류가 바뀌면 새 레코드로 등록. 이름만 보고 건너뛰어 육휴가 누락되던 문제 수정)
+        //   일반 '휴직' 레코드는 구체 종류(출산/육휴/육단)로 승격 대상으로 별도 추적
+        var _exIdx=-1,_genIdx=-1;
+        for(var _mi=0;_mi<target.maternityRecords.length;_mi++){
+          var _m=target.maternityRecords[_mi];
+          if(_m.name!==matName)continue;
+          if((_m.category||"휴직")===cat){_exIdx=_mi;break;}
+          if((!_m.category||_m.category==="휴직")&&_genIdx<0)_genIdx=_mi;
+        }
+        if(_exIdx<0&&_genIdx>=0&&cat!=="휴직"){
+          // 일반 '휴직' → 구체 종류로 승격
+          var _gm=target.maternityRecords[_genIdx];
+          _gm.category=cat;if(!_gm.empId)_gm.empId=empIdStr;maternityCnt++;
+          _exIdx=_genIdx;
+        }
         if(_exIdx<0){target.maternityRecords.push({name:matName,_uid:rec._uid,campus:rec.campus||"",grade:rec.grade||"",gubn:rec.gubn||"",category:cat,startDate:dates.start,endDate:dates.end,rawName:rec.name,empId:empIdStr,_fromRaw:true,_uploadedAt:now});maternityCnt++;}
-        else{var _exM=target.maternityRecords[_exIdx];if((!_exM.category||_exM.category==="휴직")&&cat!=="휴직"){_exM.category=cat;if(!_exM.empId)_exM.empId=empIdStr;maternityCnt++;}}
+        else{
+          var _exM=target.maternityRecords[_exIdx];
+          // 자동 생성 레코드는 시트의 최신 기간으로 갱신 (raw에서 날짜 고치면 반영 — 수기 레코드는 안 건드림)
+          if(_exM._fromRaw&&dates.start&&(_exM.startDate!==dates.start||(_exM.endDate||"")!==(dates.end||""))){
+            _exM.startDate=dates.start;_exM.endDate=dates.end;_exM.rawName=rec.name;maternityCnt++;
+          }
+          if(!_exM._uid&&rec._uid)_exM._uid=rec._uid;
+        }
       }
     }
   });
