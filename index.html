@@ -4247,8 +4247,9 @@ function isReducedWork(emp){
   var g=String(emp.gubn||"");
   if(/단시간|육단|단축/.test(g))return true;
   try{
+    // 이름/사번 괄호 표기는 "육단" 명시만 인정 — "(단축근무)" 같은 일반 표기는 육아기 단축이 아님 (전수연 오탐 방지)
     var rr=findRawForEmp(emp,D().rawRecords||[]);
-    if(rr&&/육단|단축/.test(String(rr.empId||"")+" "+String(rr.name||"")))return true;
+    if(rr&&/육단/.test(String(rr.empId||"")+" "+String(rr.name||"")))return true;
   }catch(e){}
   var empPk=emp._uid?personKeyFromUid(emp._uid):"";
   var recs=D().maternityRecords||[];
