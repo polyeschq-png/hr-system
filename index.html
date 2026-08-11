@@ -7202,6 +7202,7 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
   // existMap 키: _uid + '|' + campus — 같은 이름 동명이인/같은 사람 캠퍼스 동시등록 분리
   var _emKey=function(r){return (r._uid||r.name)+'|'+(r.campus||'');};
   var existMap={};target.rawRecords.forEach(function(r,i){existMap[_emKey(r)]=i;});
+  var _matMarked={};// 이번 시트에 휴직/육단 등 표기가 있는 사람 이름 (자동 모성 레코드 미러링 정리용)
   parsedRecs.forEach(function(rec){
     var ek=_emKey(rec);
     var ei=existMap[ek];
@@ -7242,6 +7243,7 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
       if(/복직|전환/.test(empIdStr+" "+(rec.gubn||""))&&!/육휴|출산|출휴|육단|휴직/.test(empIdStr+" "+(rec.gubn||"")+" "+(rec.name||""))){
         target.maternityRecords=target.maternityRecords.filter(function(mm){return !(mm.name===matName&&mm._fromRaw);});
       }else{
+        _matMarked[matName]=true;// 이번 시트에 휴직 표기가 있는 사람 (미러링 정리용)
         var dates=parseMaternityDates(parsed.suffix||rec.name);
         // 종류는 NO.(empId)·이름괄호·gubn 어디에 적혀도 읽음 (전수진: empId="출산")
         var cat=_matCatFromText(empIdStr+" "+(parsed.suffix||"")+" "+(rec.gubn||"")+" "+(rec.name||""))||"휴직";
@@ -7278,6 +7280,13 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
   //   2단계는 이름 기준이라, 이름은 시트에 있어도 키가 다른 옛 행(같은 사람 중복 행·전출입 잔재)이
   //   계속 살아남아 지급합계가 시트보다 커지던 문제 해결. 이번 동기화로 갱신/추가된 행 + 수동(manual) 행만 남김.
   if(sourceTag==="GSheet"&&parsedRecs.length){
+    // 자동 모성 레코드 미러링 — 이번 시트에 휴직 표기가 없어진 사람의 자동 레코드 제거
+    //   (복직 표기 없이 표기만 지운 경우도 그 달부터 정상 근무로 처리. 수기 등록 레코드는 안 건드림.
+    //    지난 달들의 레코드는 각자 달에 그대로 남아 누적/이력에는 영향 없음)
+    target.maternityRecords=target.maternityRecords.filter(function(mm){
+      if(!mm._fromRaw)return true;
+      return !!_matMarked[mm.name];
+    });
     var _keepIdx={};
     parsedRecs.forEach(function(rec){var _k=_emKey(rec);if(existMap[_k]!==undefined)_keepIdx[existMap[_k]]=true;});
     var _b4=target.rawRecords.length;
