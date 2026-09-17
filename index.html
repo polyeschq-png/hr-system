@@ -6662,18 +6662,36 @@ function autoRaiseDetailFor(rec){
     }
   }
   if(!matchingRaw)return null;
+  // 시트 기준 폴백: 메모가 없거나 메모에 이번 인상 줄이 없을 때 → 전월 raw 기본급 → 이번 달 raw 기본급 비교로 표시
+  //   (초단시간처럼 메모가 없는 사람, 메모 갱신이 안 된 사람의 인상 내역이 빈칸/옛날 인상으로 나오던 문제)
+  function rawRaiseFallback(){
+    var cur=matchingRaw.monthlyBasePay||matchingRaw.basePay||0;
+    var pk=(typeof getPrevMonthKey==="function")?getPrevMonthKey():null;
+    var pmd=pk&&MONTHS_DATA[pk];if(!cur||!pmd)return null;
+    var cn=parseRawName(matchingRaw.name||"").name||matchingRaw.name;
+    var cp=matchingRaw.campus||"";
+    var pr=(pmd.rawRecords||[]).find(function(x){return matchingRaw._uid&&x._uid===matchingRaw._uid&&(x.campus||"")===cp;})
+         ||(pmd.rawRecords||[]).find(function(x){return (parseRawName(x.name||"").name||x.name)===cn&&(x.campus||"")===cp;});
+    if(!pr)return null;
+    var prev=pr.monthlyBasePay||pr.basePay||0;
+    if(!prev||prev===cur)return null;
+    return "전월 "+fmtN(prev)+" > "+fmtN(cur)+" (시트)";
+  }
   var noteMatch=findPayHistoryNoteForRaw(matchingRaw);
-  if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return null;
+  if(!noteMatch||!noteMatch.note||!noteMatch.note.rawText)return rawRaiseFallback();
   var parsed=parsePayHistoryNote(noteMatch.note.rawText);
   var period=getMonthPeriod(curMonth);
   if(!period)return null;
   // pay 타입 + 금액 있는 entries만 (이전 값 비교용 전체 리스트)
   var allPays=parsed.entries.filter(function(e){return e.type==="pay"&&e.amount;});
+  if(!allPays.length)return rawRaiseFallback();
   // 급여기간 시작(11일) 직전 빈틈(1일자·전월말 소급 인상 등)도 잡으려 탐색 시작을 한 달 앞당김
   // 예) 5월 급여기간 05-11~06-10 → 탐색은 04-11~06-10 (05-01·04-24 인상도 포함, 작년 같은달은 제외)
   var extStart=period.start.replace(/^(\d{4})-(\d{2})-/,function(_m,y,mo){var mm=parseInt(mo,10)-1,yy=parseInt(y,10);if(mm<1){mm=12;yy--;}return yy+"-"+("0"+mm).slice(-2)+"-";});
   var inPeriod=allPays.filter(function(e){return e.date>=extStart&&e.date<=period.end;});
   if(!inPeriod.length){
+    // 메모에 이번 달 인상 줄이 없음 → 시트 전월 대비 비교가 있으면 그걸 우선 (옛날 인상이 표시되는 것 방지)
+    var rf=rawRaiseFallback();if(rf)return rf;
     // 창 밖(11일 경계·소급으로 빠지는 1일자·전월말 인상)이어도 → 이번 달(period.end) 이전 가장 최근 변동 1건은 표시
     var prior=allPays.filter(function(e){return e.date<=period.end;});
     if(prior.length)inPeriod=[prior[prior.length-1]];
@@ -9047,7 +9065,8 @@ function renderOvTurnover(emps,selCp){
   function _gubnKind(g){g=String(g||"").trim();if(g===""||g==="정규직")return"reg";if(g==="단기근로")return"short";return"etc";}
   var _exShortN=0,_exEtcN=0;
   effectiveOutRecs=effectiveOutRecs.filter(function(r){var k=_gubnKind(r.gubn);if(k==="short")_exShortN++;else if(k==="etc")_exEtcN++;return k==="reg";});
-  emps=emps.filter(function(e){return _gubnKind(e.gubn)==="reg";});
+  // 분모(재직)는 정규직 + 이번 달 퇴사 표시(No.=퇴사) 안 된 사람만 — 퇴사자가 재직·퇴직 양쪽에 세어져 비율이 왜곡되던 문제(본부장 1/1=50%) 수정
+  emps=emps.filter(function(e){return _gubnKind(e.gubn)==="reg"&&String(e.empId||"").indexOf("퇴사")<0;});
   basisLabelView+=' · 퇴사 '+effectiveOutRecs.length+'명';
   var _exParts=[];
   if(_exShortN>0)_exParts.push('단기근로 '+_exShortN+'명');
