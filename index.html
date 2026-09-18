@@ -3591,7 +3591,7 @@ function renderOvPayAnalysis(emps,selCp){
       var gc=GRADE_C[g]||{tx:"#666"};
       var avgPay=0,avgTen=0;
       if(cnt){
-        avgPay=Math.round(gEmps.reduce(function(a,e){return a+getEmpPayForAvg(e);},0)/cnt);
+        avgPay=Math.round(gEmps.reduce(function(a,e){return a+getEmpPayForAvg(e,selCp);},0)/cnt);// 캠퍼스 힌트 필수 — 전입자(두 캠퍼스 행)가 다른 캠퍼스 행 급여로 잡히던 문제
         var tSum=0,tCnt=0;
         gEmps.forEach(function(e){
           var rr=(D().rawRecords||[]).find(function(r){return r.name===e.name;});
@@ -4008,7 +4008,7 @@ function getGradeRankInGroup(campusName,grade,metric){
     var emps=getCampusActiveEmps(c.name,grade);
     if(!emps.length)return null;
     var val=0;
-    if(metric==="pay"){val=emps.reduce(function(a,e){return a+getEmpPayForAvg(e);},0)/emps.length;}
+    if(metric==="pay"){val=emps.reduce(function(a,e){return a+getEmpPayForAvg(e,c.name);},0)/emps.length;}// 캠퍼스 힌트 (전입자 타 캠퍼스 행 오매칭 방지)
     else if(metric==="tenure"){
       var totalT=0,cnt=0;
       emps.forEach(function(e){
@@ -7189,7 +7189,15 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
     // 직원 편성에서 제거 — 이름 기준 + (강화) uid·캠퍼스 기준
     //   같은 사람이 시트에는 있지만(uid 존재) "이 캠퍼스"에는 없으면 = 전배/승진 후 남은 옛 행 → 제거
     //   (서재원 목동→위례 전배 시 목동·부원장 잔재 행이 이름만 보고 살아남던 문제 해결)
-    var sheetKeys={};parsedRecs.forEach(function(rec){if(rec._uid)sheetKeys[rec._uid+"|"+(rec.campus||"")]=true;});
+    // 사람 키 = 주민7자리+이름 (행마다 입사일 표기가 달라 uid가 갈려도 같은 사람으로 — 전근 감지와 동일 기준)
+    function _empPk(u){var m=String(u||"").match(/^(\d{6,7})_\d{8}_(.+)$/);return m?m[1]+"|"+m[2]:"";}
+    var sheetKeys={},sheetPk={},sheetPkCampus={},sheetCampuses={};
+    parsedRecs.forEach(function(rec){
+      if(rec.campus)sheetCampuses[rec.campus]=true;
+      if(!rec._uid)return;
+      sheetKeys[rec._uid+"|"+(rec.campus||"")]=true;
+      var pk=_empPk(rec._uid);if(pk){sheetPk[pk]=true;sheetPkCampus[pk+"|"+(rec.campus||"")]=true;}
+    });
     target.deptData.campuses.forEach(function(cp){
       cp.teams.forEach(function(t){
         t.employees=(t.employees||[]).filter(function(e){
@@ -7197,8 +7205,13 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
           if(isSheetEmpty)shouldDelete=e._source!=="manual";
           else if(e._source!=="GSheet")shouldDelete=false;
           else if(!inSheet(e.name))shouldDelete=true;
-          else if(e._uid&&sheetUids[e._uid]&&!sheetKeys[e._uid+"|"+(cp.name||"")])shouldDelete=true;// 사람은 시트에 있는데 이 캠퍼스엔 없음 = 잔재
-          else shouldDelete=false;
+          else if(!sheetCampuses[cp.name||""])shouldDelete=true;// 이번 시트에 이 캠퍼스 행이 하나도 없음 = 캠퍼스 전체가 잔재 (정발 케이스)
+          else if(e._uid&&sheetUids[e._uid]&&!sheetKeys[e._uid+"|"+(cp.name||"")])shouldDelete=true;// 같은 uid가 시트의 다른 캠퍼스에만 있음 = 잔재
+          else{
+            var pk=_empPk(e._uid);
+            // 같은 사람(주민7+이름)이 시트에 있는데 이 캠퍼스엔 없음 = 전근 잔재 (입사일 표기가 달라 uid가 갈린 경우 — 진이정·진혜윤)
+            shouldDelete=!!(pk&&sheetPk[pk]&&!sheetPkCampus[pk+"|"+(cp.name||"")]);
+          }
           if(shouldDelete)removedCnt++;
           return !shouldDelete;
         });
