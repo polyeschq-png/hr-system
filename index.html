@@ -1799,6 +1799,47 @@ function sumRawNet(cp,rawsOverride){
   raws.forEach(function(r){if(cp&&cp!=="전체"&&r.campus!==cp)return;s+=r.netPay||0;});
   return s;
 }
+
+// ===== 폐업 캠퍼스 자동 판정 =====
+// 기준: 그 달 시트(raw)에 해당 캠퍼스 인원 0명 + 지급합계 0원, 그리고 이전 달엔 인원이 있었던 캠퍼스
+//   · 그 달 raw가 통째로 비어 있으면(시트 미업로드) 판정 안 함 — 전 캠퍼스 오판 방지
+//   · 이후 다시 인원이 생기면 자동 정상 복귀. 과거 월 데이터는 건드리지 않고 표시만 바꿈
+var _closedCpCache={key:"",map:{}};
+function getClosedCampuses(mk){
+  mk=mk||curMonth;
+  var md=MONTHS_DATA[mk];var raws=(md&&md.rawRecords)||[];
+  var months=Object.keys(MONTHS_DATA).sort(monthCompare);
+  var ck=mk+"|"+months.length+"|"+raws.length;
+  if(_closedCpCache.key===ck)return _closedCpCache.map;
+  var map={};
+  if(raws.length){
+    var here={};raws.forEach(function(r){if(!r.campus)return;var x=here[r.campus]||(here[r.campus]={n:0,p:0});x.n++;x.p+=r.totalPay||0;});
+    var idx=months.indexOf(mk);
+    ((md.deptData&&md.deptData.campuses)||[]).forEach(function(c){
+      var cp=c.name,x=here[cp];
+      if(x&&(x.n>0||x.p>0))return;
+      // 마지막으로 인원 있던 달 → 그 다음 달이 폐업 시작월
+      for(var i=idx-1;i>=0;i--){
+        var rr=(MONTHS_DATA[months[i]].rawRecords)||[];if(!rr.length)continue;
+        if(rr.some(function(r){return r.campus===cp;})){map[cp]={since:months[i+1]};break;}
+      }
+    });
+  }
+  _closedCpCache={key:ck,map:map};
+  return map;
+}
+function isCampusClosed(cp,mk){return !!getClosedCampuses(mk)[cp];}
+function closedLabel(cp,mk){var c=getClosedCampuses(mk)[cp];if(!c)return "";var m=String(c.since).match(/(\d{4})\D+(\d+)/);return m?(m[1].slice(2)+"."+String(m[2]).padStart(2,"0")+"~ 폐업"):"폐업";}
+// 화면의 캠퍼스 드롭다운 일괄 처리 — 폐업 캠퍼스를 맨 끝 "── 폐업 ──" 아래로 옮기고 회색 표시 (선택은 가능)
+function _markClosedCampusOptions(root){
+  var closed=getClosedCampuses();if(!root||!Object.keys(closed).length)return;
+  root.querySelectorAll("select").forEach(function(sel){
+    var moved=Array.prototype.slice.call(sel.options).filter(function(o){return closed[o.value];});
+    if(!moved.length)return;
+    var sep=document.createElement("option");sep.disabled=true;sep.textContent="── 폐업 ──";sel.appendChild(sep);
+    moved.forEach(function(o){o.textContent=o.value+" ("+closedLabel(o.value)+")";o.style.color="#9E9E9E";sel.appendChild(o);});
+  });
+}
 // 전월 키 찾기
 function getPrevMonthKey(){
   var keys=Object.keys(MONTHS_DATA).filter(function(k){return !hiddenMonths[k];});
@@ -2522,7 +2563,9 @@ function renderOvSummary(emps,cp,cc,st,selCp){
   if(selCp==="전체"){
     h+='<div style="font-size:11px;font-weight:700;margin-bottom:8px">캠퍼스별 현황</div>';
     h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:14px">';
+    var _closedCp=[];
     DD().campuses.forEach(function(cpi){
+      if(isCampusClosed(cpi.name)){_closedCp.push(cpi.name);return;}// 폐업 캠퍼스는 아래 별도 섹션
       var ccc=CAMPUS_C[cpi.name]||{hd:"#555"};
       var cnt=0;cpi.teams.forEach(function(t){cnt+=(t.employees||[]).length;});
       var base=sumRawPay(cpi.name),net=sumRawNet(cpi.name);// 시트 직접 합산
@@ -2534,6 +2577,7 @@ function renderOvSummary(emps,cp,cc,st,selCp){
       h+='</div>';
     });
     h+='</div>';
+    if(_closedCp.length)h+=renderClosedCampusSection(_closedCp);
   }
 
   return h;
@@ -3495,6 +3539,7 @@ function renderOvPayAnalysis(emps,selCp){
     h+='<div style="display:grid;grid-template-columns:80px 1fr 70px 80px 60px;padding:5px 12px;background:#f5f5f5;font-size:10px;font-weight:700;color:#666"><span>캠퍼스</span><span></span><span style="text-align:right">전월</span><span style="text-align:right">당월</span><span style="text-align:right">증감</span></div>';
     h+='<div style="flex:1">';
     DD().campuses.forEach(function(cpi){
+      if(isCampusClosed(cpi.name))return;// 폐업 캠퍼스는 비교에서 제외
       var ccc=CAMPUS_C[cpi.name]||{hd:"#555"};
       var curN=0,prevN=0;
       curN=sumRawPay(cpi.name);// 지급합계 = 시트 직접 합산
@@ -3982,7 +4027,15 @@ function getCampusGroup(name){
   if(EMPOLY_CAMPUSES.indexOf(n)>=0)return"엠폴리";
   return"폴리";
 }
-function getCampusesInGroup(group){return DD().campuses.filter(function(c){return getCampusGroup(c.name)===group;});}
+function getCampusesInGroup(group){return DD().campuses.filter(function(c){return getCampusGroup(c.name)===group&&!isCampusClosed(c.name);});}// 폐업 캠퍼스는 그룹 순위·비교에서 제외
+// 폐업 캠퍼스 접힘 섹션 (현황·캠퍼스별 편성 공용) — 회색 카드, 클릭하면 펼침
+function renderClosedCampusSection(names){
+  var h='<details style="margin-bottom:14px"><summary style="font-size:11px;font-weight:700;color:#9E9E9E;cursor:pointer;padding:4px 0">🏚 폐업 캠퍼스 ('+names.length+')</summary>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">';
+  names.forEach(function(n){h+='<div style="background:#f5f5f5;border:1px solid #e0e0e0;border-left:4px solid #BDBDBD;border-radius:8px;padding:8px 12px;font-size:11px;color:#9E9E9E"><b style="color:#757575">'+esc(n)+'</b> · '+esc(closedLabel(n))+'</div>';});
+  h+='</div></details>';
+  return h;
+}
 
 // 캠퍼스의 정규직 + 휴직제외 직원 (지정 직책만, grade 비우면 전체)
 function getCampusActiveEmps(campusName,grade){
@@ -5318,7 +5371,8 @@ function renderDraftInOverview(selCp){
   var inoutRecs=(D().inoutRecords||[]).filter(function(r){return r.type==="입사"||r.type==="퇴사"||r.type==="인상"||r.type==="수당";});
   var allowRecs=(D().rawRecords||[]).filter(function(r){return String(r.empId||"").indexOf("수당")>=0;});
   var matRecs=(D().maternityRecords||[]);
-  var allCampuses=DD().campuses.map(function(c){return c.name;});
+  var _draftClosed=DD().campuses.map(function(c){return c.name;}).filter(function(n){return isCampusClosed(n);});
+  var allCampuses=DD().campuses.map(function(c){return c.name;}).filter(function(n){return !isCampusClosed(n);});// 폐업 캠퍼스는 목록에서 빼고 아래 한 줄로 표기
 
   function filterByCp(arr,field){
     field=field||"campus";
@@ -5437,7 +5491,9 @@ function renderDraftInOverview(selCp){
     }
     h+='</tr>';
   });
-  h+='</tbody></table></div></div>';
+  h+='</tbody></table></div>';
+  if(_draftClosed.length)h+='<div style="padding:6px 12px;font-size:9.5px;color:#9E9E9E;background:#fafafa;border-top:1px solid #eee">🏚 폐업: '+_draftClosed.map(function(n){return esc(n)+' ('+esc(closedLabel(n))+')';}).join(', ')+'</div>';
+  h+='</div>';
 
   // ==== 우측: 선택 캠퍼스 디테일 ====
   h+='<div>';
@@ -5792,7 +5848,9 @@ function renderOvCompare(emps,selCp){
 
 function renderDept(){
   var h='<div class="filters">';
+  var _closedDept=[];
   DD().campuses.forEach(function(cp){
+    if(isCampusClosed(cp.name)){_closedDept.push(cp.name);return;}// 폐업 캠퍼스는 필터 버튼·편성에서 빼고 맨 아래 섹션으로
     var cc=CAMPUS_C[cp.name]||{hd:"#555"};
     var on=state.campusFilter===cp.name;
     h+='<button class="fpill'+(on?" on":"")+'" style="'+(on?"background:"+cc.hd+";border-color:"+cc.hd:"")+'" onclick="state.campusFilter=\''+esc(cp.name)+'\';render()">'+esc(cp.name)+'</button>';
@@ -5801,6 +5859,7 @@ function renderDept(){
   h+='</div>';
   DD().campuses.forEach(function(cp){
     if(state.campusFilter!=="all"&&state.campusFilter!==cp.name)return;
+    if(isCampusClosed(cp.name)&&state.campusFilter!==cp.name)return;
     var cc=CAMPUS_C[cp.name]||{hd:"#555"};
     var total=0;cp.teams.forEach(function(t){total+=(t.employees||[]).length;});
     h+='<div class="sess-hdr"><span class="sess-name" style="color:'+cc.hd+'">'+esc(cp.name)+'</span>';
@@ -5811,6 +5870,7 @@ function renderDept(){
     cp.teams.forEach(function(t,ti){h+=renderTeamCard(t,cp,ti);});
     h+='</div>';
   });
+  if(state.campusFilter==="all"&&_closedDept.length)h+='<div style="margin-top:12px">'+renderClosedCampusSection(_closedDept)+'</div>';
   return h;
 }
 
@@ -11137,6 +11197,7 @@ function render(){
     case"settings":h=renderSettings();break;
   }
   document.getElementById("mainContent").innerHTML=renderIntegrityBanner()+h;
+  try{_markClosedCampusOptions(document.getElementById("mainContent"));}catch(e){}// 폐업 캠퍼스 드롭다운 정리
 }
 
 // ===== 저장 =====
