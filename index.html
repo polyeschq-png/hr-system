@@ -298,6 +298,7 @@ body.card-dragging .emp-list{pointer-events:none}
   <button class="tab" data-tab="inout" style="display:none" onclick="switchTab('inout')">&#128338; 급여 특이사항</button>
   <button class="tab" data-tab="transfer" onclick="switchTab('transfer')">&#128228; 인사 발령</button>
   <button class="tab" data-tab="maternity" onclick="switchTab('maternity')">&#128118; 모성보호</button>
+  <button class="tab" data-tab="birthday" style="display:none" onclick="switchTab('birthday')">&#127874; 생일·특이사항</button>
   <button class="tab" data-tab="rawdata" style="display:none" onclick="switchTab('rawdata')">&#128196; Raw 데이터</button>
   <button class="tab" data-tab="settings" style="display:none" onclick="switchTab('settings')">&#9881; 설정</button>
 </div>
@@ -1116,7 +1117,7 @@ function gubnHTML(g){
 
 function notify(m,t){var e=document.getElementById("notif");e.textContent=m;e.className="notif "+(t||"info");e.style.display="block";clearTimeout(e._t);e._t=setTimeout(function(){e.style.display="none";},3000);}
 function switchTab(t){
-  if((t==="rawdata"||t==="settings"||t==="inout")&&!isAdminMode()){notify("관리자 모드에서만 접근할 수 있습니다 (우측 상단 🔒 관리자)","warn");return;}
+  if((t==="rawdata"||t==="settings"||t==="inout"||t==="birthday")&&!isAdminMode()){notify("관리자 모드에서만 접근할 수 있습니다 (우측 상단 🔒 관리자)","warn");return;}
   state.tab=t;invalidateGpRowCache();state.gradePayEditingUid=null;window._payHistDiagLogged=false;document.querySelectorAll("#mainTabs .tab").forEach(function(b){b.classList.toggle("on",b.dataset.tab===t);});render();
 }
 
@@ -1125,7 +1126,7 @@ var ADMIN_PASSWORD="poly1234";// 관리자 모드 비밀번호 (바꾸려면 이
 function isAdminMode(){try{return sessionStorage.getItem("hr_admin_mode")==="1";}catch(e){return false;}}
 function updateAdminUI(){
   var on=isAdminMode();
-  document.querySelectorAll('#mainTabs .tab[data-tab="rawdata"],#mainTabs .tab[data-tab="settings"],#mainTabs .tab[data-tab="inout"]').forEach(function(b){b.style.display=on?"":"none";});
+  document.querySelectorAll('#mainTabs .tab[data-tab="rawdata"],#mainTabs .tab[data-tab="settings"],#mainTabs .tab[data-tab="inout"],#mainTabs .tab[data-tab="birthday"]').forEach(function(b){b.style.display=on?"":"none";});
   var btn=document.getElementById("adminModeBtn");
   if(btn){btn.innerHTML=on?"&#128275; 관리자 &#10003;":"&#128274; 관리자";btn.style.background=on?"rgba(255,213,79,.3)":"";}
 }
@@ -1133,7 +1134,7 @@ function toggleAdminMode(){
   if(isAdminMode()){
     try{sessionStorage.removeItem("hr_admin_mode");}catch(e){}
     updateAdminUI();
-    if(state.tab==="rawdata"||state.tab==="settings"||state.tab==="inout")switchTab("overview");
+    if(state.tab==="rawdata"||state.tab==="settings"||state.tab==="inout"||state.tab==="birthday")switchTab("overview");
     // 보고 있던 월이 관리자 전용 월이면 최신 공개 월로 이동
     if(isMonthAdminHidden(curMonth)){
       var _vis=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m]&&!isMonthAdminHidden(m);});
@@ -7401,6 +7402,8 @@ function ingestRows(targetMonth,rawRows,mapping,sourceTag){
 // ===== 퇴사자 전역 저장소 (모든 월의 inoutRecords에서 자동 수집) =====
 // UID 기반. 급여특이사항 > 퇴사 탭에 퇴사일이 입력된 사람은 모두 "퇴직" 상태
 var GLOBAL_RETIRED_EMPLOYEES={};// _uid → { name, campus, grade, gubn, leaveDate, reason, firstJoin, lastBasePay, month }
+// 생일 명단 수기 추가 (전역·월 무관, settings와 함께 저장) — [{id,name,campus,grade,mm,dd,memo}]
+var GLOBAL_BIRTHDAY_MANUAL=[];
 
 // 관리자 코멘트 저장소 (Firebase 동기화됨)
 // UID → { text: string, updatedAt: ISO date, updatedBy: clientId }
@@ -11173,13 +11176,242 @@ function dismissAllIntegrity(){
   notify("무결성 이상 모두 무시","info");
 }
 
+// ===== 🎂 생일·특이사항 탭 =====
+// 생일: 당월 Raw의 주민번호 앞 6자리(YYMMDD)로 산출 (calcAge와 동일 규칙). 퇴사 표시자 제외, 휴직자는 상태 표기
+// 특이사항: 전월 Raw ↔ 당월 Raw를 같은 사람(주민7+이름, 전근 감지와 동일 기준)으로 비교
+//   ① 비관리자→관리자 ② 관리자→비관리자 ③ 관리자 입사(신규/재입사) ④ 관리자 퇴사 — 관리자 기준 = MANAGER_GRADES
+// 메일 발송(polyescha 계정 Apps Script)은 시트 기반으로 별도 동작 — 이 탭과 무관
+function _bdPersonKey(r){
+  // Raw의 주민번호 앞 7자리 + 이름을 최우선 — uid 형식(6/7자리·입사일 표기)이 달라도 전월·당월이 같은 사람으로 이어짐
+  //   (전배자가 '당월 명단에 없음'으로 퇴사 오판되던 원인 제거). 주민번호 없을 때만 uid에서 추출
+  var nm=(parseRawName(r.name||"").name||r.name||"").replace(/\s+/g,"");
+  var rr=String(r.resident||"").replace(/[^0-9]/g,"");
+  if(rr.length>=7)return rr.slice(0,7)+"|"+nm;
+  var m=String(r._uid||"").match(/^(\d{6,7})_\d{8}_(.+)$/);if(m)return m[1].slice(0,6)+"|"+nm;
+  return (rr||"?")+"|"+nm;
+}
+function _bdBirth(resident){
+  var c=String(resident||"").replace(/[^0-9]/g,"");if(c.length<6)return null;
+  var mm=parseInt(c.slice(2,4)),dd=parseInt(c.slice(4,6));
+  return (mm>=1&&mm<=12&&dd>=1&&dd<=31)?{mm:mm,dd:dd}:null;
+}
+function renderBirthday(){
+  var selCp=state.bdCampus||"전체";
+  var campuses=["전체"].concat(DD().campuses.map(function(c){return c.name;}));
+  // 이 탭은 헤더 월과 무관 — 생일 명단은 "가장 최근 데이터 월"의 명단으로 연간(1~12월) 표시, 특이사항은 자체 월 드롭다운 기준
+  var monthsAll=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return ((MONTHS_DATA[m]||{}).rawRecords||[]).length>0;});
+  var latestMk=monthsAll[monthsAll.length-1]||curMonth;
+  var selMk=(state.bdMonth&&MONTHS_DATA[state.bdMonth])?state.bdMonth:latestMk;
+  var selIdx=monthsAll.indexOf(selMk);
+  var todayMo=new Date().getMonth()+1;
+  // 전출/전입/전배 표시 행은 "캠퍼스 이동 중인 재직자" — 퇴사일이 있어도 퇴사로 보지 않음 (서재원·박청은 전배가 퇴사→입사로 잡히던 문제)
+  var isTransferRow=function(r){return /전출|전입|전배/.test(String(r.empId||""));};
+  // 퇴사 판정은 사번(No.) 칸에 "퇴사/퇴직"이 적힌 사람만 — 퇴사일 칸(예: "9/17 퇴사예정")만으로는 퇴사로 보지 않음
+  var isOutRow=function(r){if(isTransferRow(r))return false;return /퇴사|퇴직/.test(String(r.empId||""));};
+  var isLeaveRow=function(r){return /휴직|육휴|출산|출휴|육단/.test(String(r.empId||"")+" "+String(r.gubn||"")+" "+String(r.name||""));};
+  var cleanName=function(r){return parseRawName(r.name||"").name||r.name||"";};
+
+  // ── 관리자 생일 명단 (연간, 최근 월 명단 기준) ──
+  var rosterRaws=((MONTHS_DATA[latestMk]||{}).rawRecords||[]).filter(function(r){return selCp==="전체"||r.campus===selCp;});
+  // 사람당 한 줄 — 전배 전후 두 캠퍼스 행이 있으면 전입(새 캠퍼스) 행 우선, 전출 행은 제외 (박준호·구자영 2줄 문제)
+  var bdMap={};
+  rosterRaws.forEach(function(r){
+    if(isOutRow(r))return;
+    var eid=String(r.empId||"");
+    if(/전출/.test(eid))return;
+    if(!isManagerGrade(r.grade))return;// 관리자 생일만 (비관리자 명단은 표시 안 함)
+    var b=_bdBirth(r.resident);if(!b)return;
+    var k=_bdPersonKey(r);var isIn=/전입/.test(eid);
+    if(bdMap[k]&&!(isIn&&!bdMap[k].isIn))return;// 이미 있으면 유지, 단 전입 행이 오면 그걸로 교체
+    // 휴직자는 Raw 이름 괄호의 기간 표기(예: "육휴 26/6/26 - 27/6/25")를 같이 보여줌
+    var leaveTxt="";
+    if(isLeaveRow(r)){var _sfx=parseRawName(r.name||"").suffix||"";var _dt=(typeof parseMaternityDates==="function")?parseMaternityDates(_sfx||r.name):null;leaveTxt=(_dt&&_dt.start)?(_dt.start+" ~ "+(_dt.end||"")):_sfx.replace(/^[(\s]+|[)\s]+$/g,"");}
+    bdMap[k]={mm:b.mm,dd:b.dd,campus:r.campus||"",name:cleanName(r),grade:r.grade||"",gubn:r.gubn||"",leave:isLeaveRow(r),leaveTxt:leaveTxt,isIn:isIn};
+  });
+  var bd=Object.keys(bdMap).map(function(k){return bdMap[k];});
+  // 수기 추가 항목 병합 — Raw와 무관하게 유지되므로 퇴사 시 직접 삭제해야 함 (화면에 "수기" 표시)
+  (GLOBAL_BIRTHDAY_MANUAL||[]).forEach(function(m){
+    if(!m||!m.name)return;
+    if(selCp!=="전체"&&m.campus!==selCp)return;
+    bd.push({mm:parseInt(m.mm)||0,dd:parseInt(m.dd)||0,campus:m.campus||"",name:m.name,grade:m.grade||"",gubn:m.memo||"",leave:m.status==="휴직",leaveTxt:m.status==="휴직"?(m.leaveTxt||""):"",manual:true,id:m.id});
+  });
+  bd.sort(function(a,b){return a.mm-b.mm||a.dd-b.dd||a.campus.localeCompare(b.campus)||a.name.localeCompare(b.name);});
+
+  // ── 특이사항 (드롭다운 선택 월 vs 그 직전 월) ──
+  var pk=selIdx>0?monthsAll[selIdx-1]:null;
+  var curRaws=((MONTHS_DATA[selMk]||{}).rawRecords||[]).filter(function(r){return selCp==="전체"||r.campus===selCp;});
+  var prevRaws=(pk?((MONTHS_DATA[pk]||{}).rawRecords||[]):[]).filter(function(r){return selCp==="전체"||r.campus===selCp;});
+  // 사람별 대표 행 (전배로 두 행이면 재직 행 우선)
+  // 사람별 대표 행: 재직 행 우선, 같은 달에 전출·전입 두 행이면 전입(새 캠퍼스) 행 우선
+  function pickMap(list){var m={};list.forEach(function(r){var k=_bdPersonKey(r);var out=isOutRow(r);var isIn=/전입/.test(String(r.empId||""));var cur=m[k];if(!cur||(cur.out&&!out)||(!out&&!cur.isIn&&isIn))m[k]={r:r,out:out,isIn:isIn};});return m;}
+  var curMap=pickMap(curRaws),prevMap=pickMap(prevRaws);
+  var toMgr=[],toNon=[],mgrIn=[],mgrOut=[],mgrMove=[];
+  var _ncp=function(c){return typeof normalizeCampus==="function"?normalizeCampus(c||""):(c||"");};
+  // 공통 열: 캠퍼스 | 이름 | 직책 | 생일 | 일자(퇴사일·입사일·변동일 — 전배는 없음)
+  var fmtD=function(d){var m=String(d||"").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);return m?(m[1].slice(2)+"."+String(m[2]).padStart(2,"0")+"."+String(m[3]).padStart(2,"0")):"";};
+  var bdStr=function(r){var b=_bdBirth(r.resident);return b?(String(b.mm).padStart(2,"0")+"."+String(b.dd).padStart(2,"0")):"";};
+  // 직책 변동일: 그 달 인사발령 기록(직책 변경)에서 찾고, 없으면 빈칸
+  var gradeChangeDate=function(nm){var tr=(MONTHS_DATA[selMk]&&MONTHS_DATA[selMk].transferRecords)||[];var t=tr.find(function(x){return x.name===nm&&x.prevGrade&&x.grade&&x.prevGrade!==x.grade;});return t?fmtD(t.date):"";};
+  Object.keys(curMap).forEach(function(k){
+    var c=curMap[k],p=prevMap[k];var cg=c.r.grade||"",nm=cleanName(c.r),cp=c.r.campus||"",bs=bdStr(c.r);
+    if(c.out){if(isManagerGrade(cg))mgrOut.push({campus:cp,name:nm,grade:cg,birth:bs,date:fmtD(c.r.leaveDate)||String(c.r.leaveDate||"").trim()||"(사번 퇴사 표시)"});return;}// 날짜로 못 읽는 "9/17 퇴사예정" 같은 표기는 원문 그대로
+    if(!p||p.out){if(isManagerGrade(cg))mgrIn.push({campus:cp,name:nm,grade:cg,birth:bs,date:fmtD(c.r.joinDate)+(p?" (재입사)":"")});return;}
+    var pg=p.r.grade||"",pcp=p.r.campus||"";
+    if(!isManagerGrade(pg)&&isManagerGrade(cg))toMgr.push({campus:cp,name:nm,grade:pg+" → "+cg,birth:bs,date:gradeChangeDate(nm)});
+    else if(isManagerGrade(pg)&&!isManagerGrade(cg))toNon.push({campus:cp,name:nm,grade:pg+" → "+cg,birth:bs,date:gradeChangeDate(nm)});
+    // 관리자 캠퍼스 이동(전배) — 퇴사·입사가 아닌 별도 항목 (계속 관리자였으므로 일자 없음)
+    if(_ncp(pcp)!==_ncp(cp)&&(isManagerGrade(pg)||isManagerGrade(cg)))mgrMove.push({campus:pcp+" → "+cp,name:nm,grade:cg,birth:bs,date:""});
+  });
+  Object.keys(prevMap).forEach(function(k){
+    var p=prevMap[k];if(p.out||curMap[k])return;
+    if(isManagerGrade(p.r.grade))mgrOut.push({campus:p.r.campus||"",name:cleanName(p.r),grade:p.r.grade||"",birth:bdStr(p.r),date:fmtD(p.r.leaveDate)||String(p.r.leaveDate||"").trim()||"(당월 명단 없음)"});
+  });
+  function cnt(map,mgrOnly){var n=0;Object.keys(map).forEach(function(k){var x=map[k];if(x.out)return;if(mgrOnly&&!isManagerGrade(x.r.grade))return;n++;});return n;}
+  var allPrev=cnt(prevMap,false),allCur=cnt(curMap,false),mgrPrev=cnt(prevMap,true),mgrCur=cnt(curMap,true);
+
+  // ── 출력 ──
+  var card='background:#fff;border-radius:12px;border:1px solid #ECECEE;box-shadow:0 1px 2px rgba(20,20,40,.025),0 4px 14px rgba(20,20,40,.04);overflow:hidden';
+  var h='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">';
+  h+='<div style="font-size:13px;font-weight:800;color:#AD1457">🎂 생일·특이사항 <span style="font-size:11px;color:#888;font-weight:500;margin-left:6px">명단 기준 '+esc(latestMk)+'</span></div>';
+  h+='<span style="font-size:10px;color:#9da3ab;font-weight:600;margin-left:8px">캠퍼스</span>';
+  h+='<select onchange="state.bdCampus=this.value;render()" style="padding:5px 10px;border:1px solid #E5E7EB;border-radius:7px;font-size:11px;font-weight:600;font-family:inherit;background:#fff;color:#26262b">';
+  campuses.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===selCp?" selected":"")+'>'+esc(c)+'</option>';});
+  h+='</select></div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">';
+
+  // 왼쪽: 관리자 생일 명단 (연간, 월별 그룹)
+  h+='<div style="'+card+'"><div style="padding:8px 14px;background:#AD1457;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>🎂 관리자 생일 명단 (연간) <span style="opacity:.85;font-weight:400;margin-left:6px">'+bd.length+'명 · '+esc(latestMk)+' 명단 · 주민번호 기준 · 퇴사자 제외</span></span>';
+  h+='<button onclick="showAddBirthday()" style="margin-left:auto;padding:4px 12px;background:#fff;color:#AD1457;border:none;border-radius:6px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:inherit">＋ 직접 추가</button></div>';
+  if(!bd.length)h+='<div style="padding:40px;text-align:center;color:#aaa;font-size:12px">관리자 생일자가 없습니다.</div>';
+  else{
+    h+='<div style="overflow-x:auto;max-height:720px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#FAFBFD;position:sticky;top:0;z-index:2">';
+    ["날짜","캠퍼스","이름","직책","구분","상태"].forEach(function(c){h+='<th style="padding:7px 12px;text-align:left;font-weight:700;color:#9da3ab;font-size:9.5px;border-bottom:1px solid #ECECEE;white-space:nowrap">'+c+'</th>';});
+    h+='</tr></thead><tbody>';
+    var lastMm=0;
+    bd.forEach(function(b){
+      if(b.mm!==lastMm){
+        lastMm=b.mm;var isNow=b.mm===todayMo;var mCnt=bd.filter(function(x){return x.mm===b.mm;}).length;
+        h+='<tr><td colspan="6" style="padding:6px 12px;font-size:11px;font-weight:800;color:'+(isNow?"#fff":"#AD1457")+';background:'+(isNow?"#AD1457":"#FCE4EC")+'">'+b.mm+'월 <span style="font-weight:500;opacity:.85">'+mCnt+'명</span>'+(isNow?' <span style="font-size:9px;font-weight:600;opacity:.9;margin-left:6px">이번 달</span>':'')+'</td></tr>';
+      }
+      var cc=CAMPUS_C[b.campus]||{hd:"#555"};
+      // 수기 추가 행은 노란 바탕 + "수기" 배지 + 삭제 버튼 — Raw 연동이 아니므로 퇴사 시 직접 삭제 필요
+      h+='<tr style="border-bottom:1px solid #F2F2F4'+(b.manual?';background:#FFF8E1':'')+'">';
+      h+='<td style="padding:6px 12px;font-weight:800;color:#AD1457;white-space:nowrap">'+String(b.mm).padStart(2,"0")+'.'+String(b.dd).padStart(2,"0")+'</td>';
+      h+='<td style="padding:6px 12px;font-weight:700;color:'+cc.hd+';white-space:nowrap">'+esc(b.campus)+'</td>';
+      h+='<td style="padding:6px 12px;font-weight:700;white-space:nowrap">'+esc(b.name)+(b.manual?' <span title="직접 추가한 항목 — Raw와 연동되지 않음, 퇴사 시 직접 삭제" style="font-size:9px;background:#F9A825;color:#fff;padding:1px 6px;border-radius:8px;margin-left:4px;vertical-align:middle">수기</span> <button onclick="deleteBirthdayManual(\''+esc(b.id||"")+'\')" title="수기 항목 삭제" style="padding:0 5px;background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit;vertical-align:middle">🗑</button>':'')+'</td>';
+      h+='<td style="padding:6px 12px;white-space:nowrap">'+esc(b.grade)+'</td>';
+      h+='<td style="padding:6px 12px;color:#666;white-space:nowrap">'+esc(b.gubn)+'</td>';
+      h+='<td style="padding:6px 12px;white-space:nowrap">'+(b.leave?'<span style="font-size:10px;background:#F3E5F5;color:#6A1B9A;padding:2px 8px;border-radius:10px;font-weight:700">휴직</span>'+(b.leaveTxt?' <span style="font-size:10px;color:#6A1B9A">'+esc(b.leaveTxt)+'</span>':''):'<span style="font-size:10px;background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:700">재직</span>')
+        +(b.manual?' <button onclick="toggleBirthdayStatus(\''+esc(b.id||"")+'\')" title="재직↔휴직 전환" style="padding:0 5px;background:#fff;color:#666;border:1px solid #ddd;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit;vertical-align:middle">↔</button>':'')+'</td>';
+      h+='</tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div>';
+
+  // 오른쪽: 특이사항 (월 드롭다운)
+  h+='<div style="'+card+'"><div style="padding:8px 14px;background:#1a3a5c;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap">📌 특이사항';
+  h+='<select onchange="state.bdMonth=this.value;render()" style="padding:3px 8px;border:1px solid rgba(255,255,255,.5);border-radius:6px;font-size:11px;font-weight:700;font-family:inherit;background:#fff;color:#1a3a5c">';
+  monthsAll.slice().reverse().forEach(function(m){h+='<option value="'+esc(m)+'"'+(m===selMk?" selected":"")+'>'+esc(m)+'</option>';});
+  h+='</select>';
+  h+='<span style="opacity:.85;font-weight:400">'+(pk?'← 전월('+esc(pk)+') 대비':'전월 데이터 없음')+'</span></div>';
+  function chip(lbl,a,b,color){var d=b-a;var dc=d>0?"#C62828":d<0?"#1565C0":"#888";return '<div style="flex:1;background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:8px 10px"><div style="font-size:10px;color:#888">'+lbl+'</div><div style="font-size:15px;font-weight:800;color:'+color+'">'+a+' → '+b+' <span style="font-size:11px;color:'+dc+'">('+(d>0?"+":"")+d+')</span></div></div>';}
+  h+='<div style="display:flex;gap:8px;padding:10px 12px;background:#FAFBFD;border-bottom:1px solid #ECECEE">'+chip("관리자 인원",mgrPrev,mgrCur,"#5D4037")+'</div>';
+  // 공통 열 헤더 (모든 항목이 같은 열 폭 사용)
+  var COLW=["24%","16%","26%","12%","22%"];
+  h+='<table style="width:100%;border-collapse:collapse;font-size:9.5px;background:#FAFBFD"><thead><tr>';
+  ["캠퍼스","이름","직책","생일","일자"].forEach(function(c,i){h+='<th style="width:'+COLW[i]+';padding:6px 8px;text-align:left;font-weight:700;color:#9da3ab;border-bottom:1px solid #ECECEE;white-space:nowrap">'+c+'</th>';});
+  h+='</tr></thead></table>';
+  // 항목별 바탕 음영(tint) — 항목이 한눈에 구분되도록. 열은 위 공통 헤더와 동일 폭
+  function section(title,color,tint,arr,dateLbl){
+    var s='<div style="background:'+tint+';border-left:4px solid '+color+';border-bottom:1px solid #fff;padding:8px 8px 6px 8px">';
+    s+='<div style="font-size:11.5px;font-weight:800;color:'+color+';margin-bottom:4px">'+title+' <span style="font-size:10px;color:#666;font-weight:600;background:#fff;padding:1px 7px;border-radius:8px;margin-left:4px">'+arr.length+'명</span>'+(dateLbl?'<span style="font-size:9.5px;color:#888;font-weight:500;margin-left:8px">일자 = '+dateLbl+'</span>':'')+'</div>';
+    if(!arr.length){s+='<div style="font-size:10.5px;color:#999;padding:2px 0 2px">없음</div></div>';return s;}
+    s+='<table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed"><tbody>';
+    arr.forEach(function(x){
+      var cpFirst=String(x.campus).split(" → ")[0];var cc=CAMPUS_C[cpFirst]||{hd:"#555"};
+      s+='<tr style="border-top:1px solid rgba(255,255,255,.7)">';
+      s+='<td style="width:'+COLW[0]+';padding:5px 8px;font-weight:700;color:'+cc.hd+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(x.campus)+'</td>';
+      s+='<td style="width:'+COLW[1]+';padding:5px 8px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(x.name)+'</td>';
+      s+='<td style="width:'+COLW[2]+';padding:5px 8px;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(x.grade)+'</td>';
+      s+='<td style="width:'+COLW[3]+';padding:5px 8px;color:#AD1457;font-weight:700;white-space:nowrap">'+esc(x.birth||"")+'</td>';
+      s+='<td style="width:'+COLW[4]+';padding:5px 8px;color:#444;white-space:nowrap">'+esc(x.date||"")+'</td>';
+      s+='</tr>';
+    });
+    s+='</tbody></table></div>';return s;
+  }
+  h+=section("⬆ 비관리자 → 관리자","#2E7D32","#E8F5E9",toMgr,"변동일");
+  h+=section("⬇ 관리자 → 비관리자","#F57F17","#FFF3E0",toNon,"변동일");
+  h+=section("📥 관리자 입사","#1565C0","#E3F2FD",mgrIn,"입사일");
+  h+=section("📤 관리자 퇴사","#C62828","#FFEBEE",mgrOut,"퇴사일");
+  h+=section("🔁 관리자 전배 (캠퍼스 이동)","#6A1B9A","#F3E5F5",mgrMove,"");
+  h+='<div style="padding:8px 12px;font-size:9.5px;color:#9E9E9E;border-top:1px solid #f0f0f0">관리자 기준: '+esc(MANAGER_GRADES.join(" · "))+' · 같은 사람 판정: 주민번호 7자리+이름</div>';
+  h+='</div>';
+
+  h+='</div>';
+  return h;
+}
+
+// 생일 명단 수기 추가/삭제
+function showAddBirthday(){
+  var campuses=DD().campuses.map(function(c){return c.name;});
+  var h='<h2>🎂 생일 명단 직접 추가</h2>';
+  h+='<div style="font-size:11px;color:#555;background:#FFF8E1;padding:8px 12px;border-radius:6px;margin-bottom:12px;border-left:3px solid #F9A825">직접 추가한 사람은 Raw와 연동되지 않아 <b>퇴사·전배 시 직접 삭제</b>해야 합니다. 명단에 "수기" 표시로 구분됩니다.</div>';
+  h+='<div class="modal-row"><div class="field"><label>이름 *</label><input id="bd_name" placeholder="홍길동"></div><div class="field"><label>캠퍼스 *</label><select id="bd_campus">';
+  campuses.forEach(function(c){h+='<option value="'+esc(c)+'">'+esc(c)+'</option>';});
+  h+='</select></div></div>';
+  h+='<div class="modal-row"><div class="field"><label>직책</label><select id="bd_grade">';
+  MANAGER_GRADES.forEach(function(g){h+='<option value="'+esc(g)+'">'+esc(g)+'</option>';});
+  h+='<option value="">기타(직접 입력은 메모에)</option></select></div>';
+  h+='<div class="field"><label>생일 (월 / 일) *</label><div style="display:flex;gap:6px;align-items:center"><input id="bd_mm" type="number" min="1" max="12" placeholder="월" style="width:70px"><span>월</span><input id="bd_dd" type="number" min="1" max="31" placeholder="일" style="width:70px"><span>일</span></div></div></div>';
+  h+='<div class="modal-row"><div class="field"><label>상태</label><select id="bd_status" onchange="var w=document.getElementById(\'bd_leaveWrap\');if(w)w.style.display=this.value===\'휴직\'?\'\':\'none\'"><option value="재직">재직</option><option value="휴직">휴직</option></select></div>';
+  h+='<div class="field" id="bd_leaveWrap" style="display:none"><label>휴직기간 (선택)</label><input id="bd_leaveTxt" placeholder="예: 2026-07-01 ~ 2027-06-30"></div></div>';
+  h+='<div class="modal-row"><div class="field"><label>메모 (선택)</label><input id="bd_memo" placeholder="예: 외부 고문, 시트 미등록 사유 등"></div></div>';
+  h+='<div class="modal-btns"><button class="mbtn" onclick="closeModal()">취소</button><button class="mbtn pri" onclick="doSaveBirthday()">추가</button></div>';
+  document.getElementById("modalContent").innerHTML=h;document.getElementById("modalBg").classList.add("show");
+  setTimeout(function(){var el=document.getElementById("bd_name");if(el)el.focus();},0);
+}
+function doSaveBirthday(){
+  var nm=(document.getElementById("bd_name").value||"").trim();
+  var cp=document.getElementById("bd_campus").value;
+  var gr=document.getElementById("bd_grade").value;
+  var mm=parseInt(document.getElementById("bd_mm").value),dd=parseInt(document.getElementById("bd_dd").value);
+  var memo=(document.getElementById("bd_memo").value||"").trim();
+  if(!nm){notify("이름을 입력하세요","warn");return;}
+  if(!(mm>=1&&mm<=12&&dd>=1&&dd<=31)){notify("생일 월/일을 확인하세요","warn");return;}
+  var stEl=document.getElementById("bd_status");var status=stEl?stEl.value:"재직";
+  var ltEl=document.getElementById("bd_leaveTxt");var leaveTxt=(status==="휴직"&&ltEl)?(ltEl.value||"").trim():"";
+  if(!Array.isArray(GLOBAL_BIRTHDAY_MANUAL))GLOBAL_BIRTHDAY_MANUAL=[];
+  GLOBAL_BIRTHDAY_MANUAL.push({id:"bd_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),name:nm,campus:cp,grade:gr,mm:mm,dd:dd,memo:memo,status:status,leaveTxt:leaveTxt});
+  scheduleSave();closeModal();render();notify(nm+" 생일 명단에 추가 (수기·"+status+")","ok");
+}
+// 수기 항목 재직↔휴직 전환 (휴직으로 바꿀 때 기간 입력 가능)
+function toggleBirthdayStatus(id){
+  var it=(GLOBAL_BIRTHDAY_MANUAL||[]).find(function(m){return m&&m.id===id;});
+  if(!it){notify("항목을 찾을 수 없습니다","warn");return;}
+  if(it.status==="휴직"){it.status="재직";it.leaveTxt="";}
+  else{
+    var t=prompt(it.name+" 휴직기간 (선택, 예: 2026-07-01 ~ 2027-06-30)",it.leaveTxt||"");
+    if(t===null)return;
+    it.status="휴직";it.leaveTxt=String(t||"").trim();
+  }
+  scheduleSave();render();notify(it.name+" → "+it.status,"ok");
+}
+function deleteBirthdayManual(id){
+  var it=(GLOBAL_BIRTHDAY_MANUAL||[]).find(function(m){return m&&m.id===id;});
+  if(!it){notify("항목을 찾을 수 없습니다","warn");return;}
+  if(!confirm(it.name+" ("+(it.campus||"")+") 수기 항목을 삭제할까요?"))return;
+  GLOBAL_BIRTHDAY_MANUAL=GLOBAL_BIRTHDAY_MANUAL.filter(function(m){return m&&m.id!==id;});
+  scheduleSave();render();notify(it.name+" 삭제","warn");
+}
+
 function render(){
   var st=getStats();
   var allTeams=0;DD().campuses.forEach(function(cp){allTeams+=cp.teams.length;});
   document.getElementById("headerMeta").textContent=curMonth+" | 총 "+st.total+"명 · "+DD().campuses.length+"개 캠퍼스 · "+allTeams+"개 팀 · 실지급 "+fmtW(st.totalNetPay);
   // 관리자 인사카드 탭에서는 월별 탭바 숨김 (전역 데이터이므로 월 무관)
   var mb=document.getElementById("monthBar");
-  if(mb)mb.style.display=(state.tab==="hrcard"||state.tab==="personal")?"none":"";
+  if(mb)mb.style.display=(state.tab==="hrcard"||state.tab==="personal"||state.tab==="birthday")?"none":"";// 생일·특이사항은 자체 월 선택
   var h="";
   switch(state.tab){
     case"overview":h=renderOverview();break;
@@ -11192,6 +11424,7 @@ function render(){
     case"transfer":h=renderTransfer();break;
     case"draft":h=renderDraft();break;
     case"maternity":h=renderMaternity();break;
+    case"birthday":h=renderBirthday();break;
     case"paydiff":h=renderPayDiff();break;
     case"log":h=renderLog();break;
     case"settings":h=renderSettings();break;
@@ -11386,7 +11619,7 @@ function hashGlobal(key){
     if(key==="retiredManagers")return _strHash(JSON.stringify(GLOBAL_RETIRED_MANAGERS||[]));
     if(key==="adminComments")return _strHash(JSON.stringify(GLOBAL_ADMIN_COMMENTS||{}));
     if(key==="payHistoryNotes")return _strHash(JSON.stringify(GLOBAL_PAY_HISTORY_NOTES||{}))+"_"+_strHash(JSON.stringify(GLOBAL_PAY_HISTORY_NOTES_BY_MONTH||{}))+"_"+(PAY_HISTORY_LAST_UPLOAD?PAY_HISTORY_LAST_UPLOAD.at:"");
-    if(key==="settings")return _strHash(JSON.stringify({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors}));
+    if(key==="settings")return _strHash(JSON.stringify({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,birthdayManual:GLOBAL_BIRTHDAY_MANUAL}));
     if(key==="history")return _strHash(JSON.stringify(state.history||[]));
   }catch(e){}
   return "";
@@ -11409,7 +11642,7 @@ function pushAllToFirebaseV2(){
   tasks.push(FB.rootRef.child("retiredManagers").set({_payload:GLOBAL_RETIRED_MANAGERS,_by:FB.clientId,_at:Date.now()}));
   tasks.push(FB.rootRef.child("adminComments").set({_payload:GLOBAL_ADMIN_COMMENTS,_by:FB.clientId,_at:Date.now()}));
   tasks.push(FB.rootRef.child("payHistoryNotes").set({_payload:GLOBAL_PAY_HISTORY_NOTES,_payloadByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,_lastUpload:PAY_HISTORY_LAST_UPLOAD,_by:FB.clientId,_at:Date.now()}));
-  tasks.push(FB.rootRef.child("settings").set({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,_by:FB.clientId,_at:Date.now()}));
+  tasks.push(FB.rootRef.child("settings").set({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,birthdayManual:GLOBAL_BIRTHDAY_MANUAL,_by:FB.clientId,_at:Date.now()}));
   tasks.push(FB.rootRef.child("history").set({_payload:state.history,_by:FB.clientId,_at:Date.now()}));
   _globalHashes.adminCards=hashGlobal("adminCards");
   _globalHashes.retiredManagers=hashGlobal("retiredManagers");
@@ -11492,7 +11725,7 @@ function pushChangedToFirebase(){
   }
   ch=hashGlobal("settings");
   if(_globalHashes.settings!==ch){
-    tasks.push(FB.rootRef.child("settings").set(fbSafeKeysDeep({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,_by:FB.clientId,_at:Date.now()})));
+    tasks.push(FB.rootRef.child("settings").set(fbSafeKeysDeep({CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,hiddenMonths:hiddenMonths,monthColors:monthColors,birthdayManual:GLOBAL_BIRTHDAY_MANUAL,_by:FB.clientId,_at:Date.now()})));
     _globalHashes.settings=ch;changes.push("settings");
   }
   ch=hashGlobal("history");
@@ -11546,6 +11779,7 @@ function applyRemoteDataV2(remote){
       if(s.GRADE_C){Object.keys(GRADE_C).forEach(function(k){delete GRADE_C[k];});Object.assign(GRADE_C,s.GRADE_C);}
       if(s.hiddenMonths)hiddenMonths=s.hiddenMonths;
       if(s.monthColors)monthColors=s.monthColors;
+      if(s.birthdayManual)GLOBAL_BIRTHDAY_MANUAL=Array.isArray(s.birthdayManual)?s.birthdayManual:Object.keys(s.birthdayManual).map(function(k){return s.birthdayManual[k];});
     }
     if(remote.history){state.history=remote.history._payload||(Array.isArray(remote.history)?remote.history:[]);}
 
@@ -11835,7 +12069,7 @@ function saveLocalBackup(){
   // localStorage 백업 (전체 스냅샷) — Firebase 성공 여부와 무관하게 데이터 보호
   try{
     localStorage.setItem("hr_poly_data",JSON.stringify({
-      months:MONTHS_DATA,history:state.history,hiddenMonths:hiddenMonths,monthColors:monthColors,
+      months:MONTHS_DATA,history:state.history,hiddenMonths:hiddenMonths,monthColors:monthColors,birthdayManual:GLOBAL_BIRTHDAY_MANUAL,
       curMonth:curMonth,CAMPUS_C:CAMPUS_C,GRADE_C:GRADE_C,
       adminCards:GLOBAL_ADMIN_CARDS,retiredManagers:GLOBAL_RETIRED_MANAGERS,adminComments:GLOBAL_ADMIN_COMMENTS,
       payHistoryNotes:GLOBAL_PAY_HISTORY_NOTES,payHistoryNotesByMonth:GLOBAL_PAY_HISTORY_NOTES_BY_MONTH,payHistoryLastUpload:PAY_HISTORY_LAST_UPLOAD,
@@ -11882,6 +12116,7 @@ function scheduleSave(){
       if(d.history)state.history=d.history;
       if(d.hiddenMonths)hiddenMonths=d.hiddenMonths;
       if(d.monthColors)monthColors=d.monthColors;
+      if(Array.isArray(d.birthdayManual))GLOBAL_BIRTHDAY_MANUAL=d.birthdayManual;
       // 시작 월: 마지막 사용 월을 복원하지 않고 항상 "가장 최근 월 시트"로 (숨김 월 제외)
       (function(){var mks=Object.keys(MONTHS_DATA).sort(monthCompare).filter(function(m){return !hiddenMonths[m];});if(mks.length)curMonth=mks[mks.length-1];})();
       if(d.CAMPUS_C)Object.assign(CAMPUS_C,d.CAMPUS_C);
