@@ -11226,14 +11226,17 @@ function renderBirthday(){
     // 휴직자는 Raw 이름 괄호의 기간 표기(예: "육휴 26/6/26 - 27/6/25")를 같이 보여줌
     var leaveTxt="";
     if(isLeaveRow(r)){var _sfx=parseRawName(r.name||"").suffix||"";var _dt=(typeof parseMaternityDates==="function")?parseMaternityDates(_sfx||r.name):null;leaveTxt=(_dt&&_dt.start)?(_dt.start+" ~ "+(_dt.end||"")):_sfx.replace(/^[(\s]+|[)\s]+$/g,"");}
-    bdMap[k]={mm:b.mm,dd:b.dd,campus:r.campus||"",name:cleanName(r),grade:r.grade||"",gubn:r.gubn||"",leave:isLeaveRow(r),leaveTxt:leaveTxt,isIn:isIn};
+    // 육아기 근로시간 단축(육단/단축)은 휴직이 아니라 "단축"으로 구분
+    var _lk=isLeaveRow(r)?(/육단|단축/.test(String(r.empId||"")+" "+String(r.gubn||"")+" "+String(r.name||""))?"단축":"휴직"):"";
+    bdMap[k]={mm:b.mm,dd:b.dd,campus:r.campus||"",name:cleanName(r),grade:r.grade||"",gubn:r.gubn||"",leave:!!_lk,leaveKind:_lk,leaveTxt:leaveTxt,isIn:isIn};
   });
   var bd=Object.keys(bdMap).map(function(k){return bdMap[k];});
   // 수기 추가 항목 병합 — Raw와 무관하게 유지되므로 퇴사 시 직접 삭제해야 함 (화면에 "수기" 표시)
   (GLOBAL_BIRTHDAY_MANUAL||[]).forEach(function(m){
     if(!m||!m.name)return;
     if(selCp!=="전체"&&m.campus!==selCp)return;
-    bd.push({mm:parseInt(m.mm)||0,dd:parseInt(m.dd)||0,campus:m.campus||"",name:m.name,grade:m.grade||"",gubn:m.memo||"",leave:m.status==="휴직",leaveTxt:m.status==="휴직"?(m.leaveTxt||""):"",manual:true,id:m.id});
+    var _mk=(m.status==="휴직"||m.status==="단축")?m.status:"";
+    bd.push({mm:parseInt(m.mm)||0,dd:parseInt(m.dd)||0,campus:m.campus||"",name:m.name,grade:m.grade||"",gubn:m.memo||"",leave:!!_mk,leaveKind:_mk,leaveTxt:_mk?(m.leaveTxt||""):"",manual:true,id:m.id});
   });
   bd.sort(function(a,b){return a.mm-b.mm||a.dd-b.dd||a.campus.localeCompare(b.campus)||a.name.localeCompare(b.name);});
 
@@ -11301,7 +11304,8 @@ function renderBirthday(){
       h+='<td style="padding:6px 12px;font-weight:700;white-space:nowrap">'+esc(b.name)+(b.manual?' <span title="직접 추가한 항목 — Raw와 연동되지 않음, 퇴사 시 직접 삭제" style="font-size:9px;background:#F9A825;color:#fff;padding:1px 6px;border-radius:8px;margin-left:4px;vertical-align:middle">수기</span> <button onclick="deleteBirthdayManual(\''+esc(b.id||"")+'\')" title="수기 항목 삭제" style="padding:0 5px;background:#fff;color:#C62828;border:1px solid #FFCDD2;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit;vertical-align:middle">🗑</button>':'')+'</td>';
       h+='<td style="padding:6px 12px;white-space:nowrap">'+esc(b.grade)+'</td>';
       h+='<td style="padding:6px 12px;color:#666;white-space:nowrap">'+esc(b.gubn)+'</td>';
-      h+='<td style="padding:6px 12px;white-space:nowrap">'+(b.leave?'<span style="font-size:10px;background:#F3E5F5;color:#6A1B9A;padding:2px 8px;border-radius:10px;font-weight:700">휴직</span>'+(b.leaveTxt?' <span style="font-size:10px;color:#6A1B9A">'+esc(b.leaveTxt)+'</span>':''):'<span style="font-size:10px;background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:700">재직</span>')
+      var _isShort=b.leaveKind==="단축";
+      h+='<td style="padding:6px 12px;white-space:nowrap">'+(b.leave?'<span style="font-size:10px;background:'+(_isShort?"#FFF3E0":"#F3E5F5")+';color:'+(_isShort?"#E65100":"#6A1B9A")+';padding:2px 8px;border-radius:10px;font-weight:700">'+(_isShort?"단축":"휴직")+'</span>'+(b.leaveTxt?' <span style="font-size:10px;color:'+(_isShort?"#E65100":"#6A1B9A")+'">'+esc(b.leaveTxt)+'</span>':''):'<span style="font-size:10px;background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-weight:700">재직</span>')
         +(b.manual?' <button onclick="toggleBirthdayStatus(\''+esc(b.id||"")+'\')" title="재직↔휴직 전환" style="padding:0 5px;background:#fff;color:#666;border:1px solid #ddd;border-radius:3px;font-size:9px;cursor:pointer;font-family:inherit;vertical-align:middle">↔</button>':'')+'</td>';
       h+='</tr>';
     });
@@ -11364,8 +11368,8 @@ function showAddBirthday(){
   MANAGER_GRADES.forEach(function(g){h+='<option value="'+esc(g)+'">'+esc(g)+'</option>';});
   h+='<option value="">기타(직접 입력은 메모에)</option></select></div>';
   h+='<div class="field"><label>생일 (월 / 일) *</label><div style="display:flex;gap:6px;align-items:center"><input id="bd_mm" type="number" min="1" max="12" placeholder="월" style="width:70px"><span>월</span><input id="bd_dd" type="number" min="1" max="31" placeholder="일" style="width:70px"><span>일</span></div></div></div>';
-  h+='<div class="modal-row"><div class="field"><label>상태</label><select id="bd_status" onchange="var w=document.getElementById(\'bd_leaveWrap\');if(w)w.style.display=this.value===\'휴직\'?\'\':\'none\'"><option value="재직">재직</option><option value="휴직">휴직</option></select></div>';
-  h+='<div class="field" id="bd_leaveWrap" style="display:none"><label>휴직기간 (선택)</label><input id="bd_leaveTxt" placeholder="예: 2026-07-01 ~ 2027-06-30"></div></div>';
+  h+='<div class="modal-row"><div class="field"><label>상태</label><select id="bd_status" onchange="var w=document.getElementById(\'bd_leaveWrap\');if(w)w.style.display=(this.value===\'휴직\'||this.value===\'단축\')?\'\':\'none\'"><option value="재직">재직</option><option value="휴직">휴직</option><option value="단축">단축 (육아기 근로시간 단축)</option></select></div>';
+  h+='<div class="field" id="bd_leaveWrap" style="display:none"><label>기간 (선택)</label><input id="bd_leaveTxt" placeholder="예: 2026-07-01 ~ 2027-06-30"></div></div>';
   h+='<div class="modal-row"><div class="field"><label>메모 (선택)</label><input id="bd_memo" placeholder="예: 외부 고문, 시트 미등록 사유 등"></div></div>';
   h+='<div class="modal-btns"><button class="mbtn" onclick="closeModal()">취소</button><button class="mbtn pri" onclick="doSaveBirthday()">추가</button></div>';
   document.getElementById("modalContent").innerHTML=h;document.getElementById("modalBg").classList.add("show");
@@ -11380,20 +11384,21 @@ function doSaveBirthday(){
   if(!nm){notify("이름을 입력하세요","warn");return;}
   if(!(mm>=1&&mm<=12&&dd>=1&&dd<=31)){notify("생일 월/일을 확인하세요","warn");return;}
   var stEl=document.getElementById("bd_status");var status=stEl?stEl.value:"재직";
-  var ltEl=document.getElementById("bd_leaveTxt");var leaveTxt=(status==="휴직"&&ltEl)?(ltEl.value||"").trim():"";
+  var ltEl=document.getElementById("bd_leaveTxt");var leaveTxt=((status==="휴직"||status==="단축")&&ltEl)?(ltEl.value||"").trim():"";
   if(!Array.isArray(GLOBAL_BIRTHDAY_MANUAL))GLOBAL_BIRTHDAY_MANUAL=[];
   GLOBAL_BIRTHDAY_MANUAL.push({id:"bd_"+Date.now()+"_"+Math.random().toString(36).slice(2,7),name:nm,campus:cp,grade:gr,mm:mm,dd:dd,memo:memo,status:status,leaveTxt:leaveTxt});
   scheduleSave();closeModal();render();notify(nm+" 생일 명단에 추가 (수기·"+status+")","ok");
 }
-// 수기 항목 재직↔휴직 전환 (휴직으로 바꿀 때 기간 입력 가능)
+// 수기 항목 상태 전환: 재직 → 휴직 → 단축 → 재직 (휴직/단축으로 바꿀 때 기간 입력 가능)
 function toggleBirthdayStatus(id){
   var it=(GLOBAL_BIRTHDAY_MANUAL||[]).find(function(m){return m&&m.id===id;});
   if(!it){notify("항목을 찾을 수 없습니다","warn");return;}
-  if(it.status==="휴직"){it.status="재직";it.leaveTxt="";}
+  var next=it.status==="휴직"?"단축":it.status==="단축"?"재직":"휴직";
+  if(next==="재직"){it.status="재직";it.leaveTxt="";}
   else{
-    var t=prompt(it.name+" 휴직기간 (선택, 예: 2026-07-01 ~ 2027-06-30)",it.leaveTxt||"");
+    var t=prompt(it.name+" "+next+" 기간 (선택, 예: 2026-07-01 ~ 2027-06-30)",it.leaveTxt||"");
     if(t===null)return;
-    it.status="휴직";it.leaveTxt=String(t||"").trim();
+    it.status=next;it.leaveTxt=String(t||"").trim();
   }
   scheduleSave();render();notify(it.name+" → "+it.status,"ok");
 }
