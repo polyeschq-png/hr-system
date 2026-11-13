@@ -3977,6 +3977,9 @@ function normalizeAllCampusNames(){
       // 같은 캠퍼스 내 직원 dedup — 이름 단위로 묶고 fake UID("이름_yyyymmdd") 쪽을 버림
       // (Brayden Bui 사례: 같은 사람이 fake UID와 real UID로 2번 등록된 케이스 해결)
       function _isFakeUid(uid,name){return uid&&name&&String(uid).indexOf(name+"_")===0;}
+      function _rrnOfUid(u){var m=String(u||"").match(/^(\d{6,7})_\d{8}_/);return m?m[1]:"";}
+      function _sameRrn(a,b){if(a.length===7&&b.length===7)return a===b;return a.slice(0,6)===b.slice(0,6);}// 6자리 옛 형식과도 비교
+      var _rawUidSet={};(md.rawRecords||[]).forEach(function(r){if(r._uid)_rawUidSet[r._uid]=true;});
       Object.keys(byName).forEach(function(k){
         var cp2=byName[k];
         var collectByName={};
@@ -3990,17 +3993,29 @@ function normalizeAllCampusNames(){
         Object.keys(collectByName).forEach(function(name){
           var entries=collectByName[name];
           if(entries.length<=1)return;
-          // 우선순위: real UID > fake UID > no UID. 같은 등급이면 첫 번째 유지.
+          // 우선순위: real UID > fake UID > no UID. 같은 등급이면 이번 달 raw에 있는 uid 우선, 그다음 첫 번째.
           entries.sort(function(a,b){
             var aHas=!!a.emp._uid,bHas=!!b.emp._uid;
             var aFake=_isFakeUid(a.emp._uid,name),bFake=_isFakeUid(b.emp._uid,name);
             var aScore=aHas?(aFake?1:2):0;
             var bScore=bHas?(bFake?1:2):0;
-            return bScore-aScore;
+            if(bScore!==aScore)return bScore-aScore;
+            return (_rawUidSet[b.emp._uid]?1:0)-(_rawUidSet[a.emp._uid]?1:0);
           });
-          entries.slice(1).forEach(function(en){
-            en.team.employees=en.team.employees.filter(function(x){return x!==en.emp;});
-            fixed++;
+          // 같은 "사람"의 중복만 제거 — 주민번호가 다른 진짜 동명이인은 둘 다 유지
+          //   (목동 이수빈: 상담교사·사서 동명이인 중 한 명이 매번 지워지던 문제)
+          var keptRrn=[],keptAny=false;
+          entries.forEach(function(en){
+            var rrn=_isFakeUid(en.emp._uid,name)?"":_rrnOfUid(en.emp._uid);
+            var dup;
+            if(rrn)dup=keptRrn.some(function(k){return _sameRrn(k,rrn);});// 주민번호 있는 행: 같은 주민번호가 이미 남아 있을 때만 중복
+            else dup=keptAny;// 가짜/없는 uid 행: 이미 남긴 행이 있으면 그 사람의 중복으로 보고 제거 (기존 동작)
+            if(dup){
+              en.team.employees=en.team.employees.filter(function(x){return x!==en.emp;});
+              fixed++;
+            }else{
+              keptAny=true;if(rrn)keptRrn.push(rrn);
+            }
           });
         });
       });
@@ -11053,26 +11068,37 @@ function syncMissingFromRaw(monthKey){
     catch(_){return String(s||"");}
   }
   var existSet={};
+  // 이름|캠퍼스 → 그 이름으로 등록된 직원들의 uid 목록 (같은 캠퍼스 동명이인 판별용)
+  var uidsByName={};
+  function _rrnU(u){var m=String(u||"").match(/^(\d{6,7})_\d{8}_/);return m?m[1]:"";}
+  function _sameRrnU(a,b){if(a.length===7&&b.length===7)return a===b;return a.slice(0,6)===b.slice(0,6);}
   md.deptData.campuses.forEach(function(cp){
     (cp.teams||[]).forEach(function(t){
       (t.employees||[]).forEach(function(e){
         if(!e.name)return;
         var cp1=(cp.name||"");
         existSet[e.name+"|"+cp1]=true;
+        (uidsByName[e.name+"|"+cp1]=uidsByName[e.name+"|"+cp1]||[]).push(e._uid||"");
         var cn=_clean(e.name);
-        if(cn&&cn!==e.name)existSet[cn+"|"+cp1]=true;
+        if(cn&&cn!==e.name){existSet[cn+"|"+cp1]=true;(uidsByName[cn+"|"+cp1]=uidsByName[cn+"|"+cp1]||[]).push(e._uid||"");}
       });
     });
   });
+  // 같은 이름의 행이 있어도, 그 행들이 전부 "주민번호가 다른 사람"이면 이 raw의 사람은 명단에 없는 것 (동명이인 누락)
+  function _coveredByName(key,rawUid){
+    var list=uidsByName[key];if(!list||!list.length)return false;
+    var rr=_rrnU(rawUid);if(!rr)return true;// raw에 주민번호 없으면 판단 불가 → 기존처럼 있는 것으로 봄
+    return list.some(function(u){var er=_rrnU(u);return !er||_sameRrnU(er,rr);});// uid 없는 옛 행이거나 주민번호 같으면 같은 사람
+  }
   var added=0;
   (md.rawRecords||[]).forEach(function(r){
     if(!r.name||!r.campus)return;
     var empIdStr=String(r.empId||"").trim();
     if(empIdStr==="퇴사")return;
     // 원형 / 정규화형 둘 다 체크 — "이경진(재입사)"와 "이경진"을 동일인으로 매칭
-    if(existSet[r.name+"|"+r.campus])return;
+    if(existSet[r.name+"|"+r.campus]&&_coveredByName(r.name+"|"+r.campus,r._uid))return;
     var rClean=_clean(r.name);
-    if(rClean&&existSet[rClean+"|"+r.campus])return;
+    if(rClean&&existSet[rClean+"|"+r.campus]&&_coveredByName(rClean+"|"+r.campus,r._uid))return;
     try{
       syncEmpFromRaw(r,monthKey,true);
       existSet[r.name+"|"+r.campus]=true;
